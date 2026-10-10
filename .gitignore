@@ -1,0 +1,41 @@
+# ── 本地工作目录（⭐ 绝不能提交）──
+# .workbuddy/ 含本项目的会话记忆与本地缓存，属于私有工作数据
+.workbuddy/
+
+# ── 编译产物 ──
+*.exe
+*.dll
+*.so
+*.dylib
+/wukan
+wukan.exe
+*-quic
+
+# ── 运行产物 ──
+# 扫描结果、测试日志、缓存文件
+*.log
+*.csv
+result*.json
+*_result.json
+stress_*.txt
+test_ips.txt
+favicon_table_*.json
+wukan-*.json
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Go ──
+# 仅忽略根级 vendor（子项目按需自行管理）
+/vendor/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/

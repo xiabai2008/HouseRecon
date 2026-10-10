@@ -1,0 +1,42 @@
+MIT License
+
+Copyright (c) 2026 xiabai2008
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+附加条款：授权使用要求（Additional Terms: Authorized Use Only）
+================================================================================
+
+本软件是网络安全测试工具。使用本软件即表示你同意以下条款：
+
+1. 仅限授权使用。你只能对**你自己拥有**或**已获得明确书面授权**的目标
+   使用本软件的任何主动探测功能（`ports`、`tech`、`recon --ports/--tech/--quic`）。
+
+2. 遵守当地法律。使用者须自行确保其行为符合所在司法管辖区的法律法规。
+   在中国大陆，未经授权扫描或入侵他人系统可能触犯《刑法》第 285 条、286 条
+   及《网络安全法》。本工具内置了端口白名单等约束，但这不构成法律豁免。
+
+3. 自担风险。作者不对任何误用、滥用或由此产生的后果承担责任。
+
+4. 无担保。本软件按"现状"提供，不保证准确性或适用性。
+
+被动查询功能（`ipinfo`、`recon` 默认流程、`recon --rdns`）仅查询公开的
+DNS / RDAP / 证书透明度 / 第三方公开 API，不向目标发送探测包。
+================================================================================

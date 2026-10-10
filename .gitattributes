@@ -1,0 +1,24 @@
+# 统一换行符：仓库内一律 LF，避免 Windows/Linux 协作时的 CRLF 混乱
+* text=auto eol=lf
+
+# 源码与文档
+*.go      text eol=lf
+*.py      text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.txt     text eol=lf
+
+# 二进制（禁止任何文本处理）
+*.exe     binary
+*.dll     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+
+# 让 GitHub 语言统计正确（避免把 vendored/生成的代码算进去）
+*.sum     linguist-generated

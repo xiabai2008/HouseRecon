@@ -1,0 +1,17 @@
+# 编译产物
+*.exe
+/wukan
+# 测试与输出
+test_ips.txt
+stress_ips.txt
+*.json
+!package.json
+# ⭐ 例外：favicon 哈希表是工具的**数据文件**（可追溯性依赖它），必须提交。
+#   若不写这条，会被上面的 *.json 误排除，
+#   导致 clone 下来的人 favicon 识别全部失效（且无任何报错）。
+!internal/httpprobe/favicon_table.json
+*.csv
+*.txt
+!README.md
+# ⭐ 例外：靶场脚本是验证工具的一部分，且被文档引用
+!internal/portscan/testdata/*.py
