@@ -3,6 +3,14 @@
 > **一屋之内，勘遍全网**
 > 短标语：屋中勘察，尽收踪迹
 
+```
+  /\
+ /  \
+/____\
+| [] |  屋勘 HouseRecon  v0.1.0
+|____|  一屋之内，勘遍全网
+```
+
 轻量化网络空间资产侦察与信息收集工具。**Go 实现，零第三方依赖，单文件 exe。**
 
 ---
@@ -81,6 +89,18 @@ wukan ipinfo 8.8.8.8 1.1.1.1 --rdns
 wukan recon example.com -o result.json      # 扩展名自动推断格式
 wukan tech -f urls.txt --csv -o out.csv
 ```
+
+### 环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `WUKAN_NO_BANNER=1` | 不输出 ASCII 启动页 |
+| `WUKAN_FORCE_BANNER=1` | 强制输出启动页 |
+| `NO_COLOR=1` / `WUKAN_NO_COLOR=1` | 关闭 ANSI 颜色（遵循 [no-color.org](https://no-color.org/) 约定） |
+| `WUKAN_FORCE_COLOR=1` | 强制彩色 |
+
+启动页与颜色**默认只在终端（TTY）下启用**：输出被重定向或接入管道时自动降级为纯文本，
+保证 `wukan help > doc.txt` 和 `wukan version | awk ...` 拿到的是干净、可解析的输出。
 
 ---
 

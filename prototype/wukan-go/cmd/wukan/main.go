@@ -45,9 +45,11 @@ func main() {
 	case "tech", "fingerprint", "fp":
 		runTech(os.Args[2:])
 	case "version", "-v", "--version":
-		fmt.Println(version)
+		printVersion(os.Stdout)
 	case "help", "-h", "--help":
-		printUsage()
+		// ⭐ 帮助是**正常请求**，输出到 stdout（便于 `wukan help > doc.txt`）；
+		//   而"无参数 / 未知命令"属于错误路径，走 stderr + 非零退出码。
+		printUsageTo(os.Stdout)
 	default:
 		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n", os.Args[1])
 		printUsage()
@@ -55,8 +57,118 @@ func main() {
 	}
 }
 
-func printUsage() {
-	fmt.Fprint(os.Stderr, `屋勘 HouseRecon — 网络空间资产侦察与信息收集工具
+// ── 启动页 ────────────────────────────────────────────────
+
+// ANSI 颜色
+//
+// ⭐ 只在 TTY 下启用（见 colorOn）。输出被重定向或接入管道时自动降级为纯文本，
+// 保证 `wukan help | grep xxx` 这类用法拿到的是干净输出。
+// 同时遵循 NO_COLOR 约定（https://no-color.org/）。
+const (
+	ansiReset  = "\033[0m"
+	ansiBold   = "\033[1m"
+	ansiCyan   = "\033[36m"
+	ansiYellow = "\033[33m"
+	ansiDim    = "\033[90m"
+)
+
+// isTTY 判断 writer 是否连着终端
+func isTTY(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// colorOn 是否启用 ANSI 颜色
+func colorOn(w io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("WUKAN_NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("WUKAN_FORCE_COLOR") != "" {
+		return true
+	}
+	return isTTY(w)
+}
+
+// bannerOn 是否输出启动页
+//
+// ⭐ 只在终端下输出。理由：启动页是**给人看的装饰**，
+// 一旦输出被重定向（`wukan help > doc.txt`、`| grep`），
+// ASCII 图案会污染可解析的内容。非 TTY 时自动省略。
+// 也可用 WUKAN_NO_BANNER=1 强制关闭。
+func bannerOn(w io.Writer) bool {
+	if os.Getenv("WUKAN_NO_BANNER") != "" {
+		return false
+	}
+	// ⭐ 强制显示：用于 CI 日志、录屏、或想在管道里保留启动页的场景
+	if os.Getenv("WUKAN_FORCE_BANNER") != "" {
+		return true
+	}
+	return isTTY(w)
+}
+
+// printBanner 输出 ASCII 启动页
+//
+// 图案取自项目命名文档（名称.txt）：
+//
+//	  /\
+//	 /  \
+//	/____\
+//	| [] |  屋勘 HouseRecon
+//	|____|  一屋之内，勘遍全网
+//
+// ⭐ 房子用 6 字符宽（`/____\` 与 `| [] |` 等宽），保证屋顶与墙体对齐。
+func printBanner(w io.Writer) {
+	if !bannerOn(w) {
+		return
+	}
+	col := colorOn(w)
+	paint := func(code, s string) string {
+		if !col {
+			return s
+		}
+		return code + s + ansiReset
+	}
+	ver := strings.TrimPrefix(version, "wukan/")
+
+	rows := []struct{ house, text string }{
+		{`  /\`, ""},
+		{` /  \`, ""},
+		{`/____\`, ""},
+		{`| [] |`, "  " + paint(ansiBold+ansiCyan, "屋勘 HouseRecon") +
+			paint(ansiDim, "  v"+ver)},
+		{`|____|`, "  " + paint(ansiYellow, "一屋之内，勘遍全网")},
+	}
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s%s\n", paint(ansiCyan, r.house), r.text)
+	}
+	fmt.Fprintln(w)
+}
+
+// printVersion 输出版本信息（TTY 下先打启动页）
+//
+// ⭐ 版本号本身保持**单行**输出，因为脚本常解析它。
+//
+//	启动页只在 TTY 下出现（见 bannerOn），
+//	所以 `wukan version | awk '{print $1}'` 依然只拿到 "wukan/0.1.0"。
+func printVersion(w io.Writer) {
+	printBanner(w)
+	fmt.Fprintln(w, version)
+}
+
+// printUsage 输出到 stderr（用于错误路径：无参数、未知命令）
+func printUsage() { printUsageTo(os.Stderr) }
+
+// printUsageTo 输出帮助
+func printUsageTo(w io.Writer) {
+	printBanner(w)
+	fmt.Fprint(w, `网络空间资产侦察与信息收集工具
 
 用法:
   wukan <命令> [参数]
