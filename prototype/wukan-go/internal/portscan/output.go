@@ -26,13 +26,18 @@ func WriteTable(w io.Writer, rs []PortResult, showAll bool) {
 		if !r.Open() && !showAll {
 			continue
 		}
+		banner := dashIfEmpty(truncateStr(r.Banner, 46))
+		// ⭐ 缓存行必须可辨认 —— 这不是本次实时探测的结果
+		if r.Cached {
+			banner += " [缓存]"
+		}
 		line := fmt.Sprintf("  %s\t%d\t%.1fms\t%s\t%d\t%s",
 			r.Host, r.Port, r.RTTMs(), dashIfEmpty(r.Service), r.Confidence,
-			dashIfEmpty(truncateStr(r.Banner, 46)))
+			banner)
 		if showAll {
 			line = fmt.Sprintf("  %s\t%d\t%s\t%.1fms\t%s\t%d\t%s",
 				r.Host, r.Port, r.State, r.RTTMs(), dashIfEmpty(r.Service),
-				r.Confidence, dashIfEmpty(truncateStr(r.Banner, 46)))
+				r.Confidence, banner)
 		}
 		fmt.Fprintln(tw, line)
 	}
@@ -63,7 +68,7 @@ func WriteCSV(w io.Writer, rs []PortResult) error {
 
 	if err := cw.Write([]string{
 		"host", "ip", "port", "state", "rtt_ms",
-		"service", "confidence", "probe_method", "banner", "error",
+		"service", "confidence", "probe_method", "banner", "error", "cached",
 	}); err != nil {
 		return err
 	}
@@ -72,7 +77,7 @@ func WriteCSV(w io.Writer, rs []PortResult) error {
 			r.Host, r.IP, strconv.Itoa(r.Port), string(r.State),
 			strconv.FormatFloat(r.RTTMs(), 'f', 2, 64),
 			r.Service, strconv.Itoa(r.Confidence), r.ProbeMethod,
-			r.Banner, r.Err,
+			r.Banner, r.Err, strconv.FormatBool(r.Cached),
 		}); err != nil {
 			return err
 		}

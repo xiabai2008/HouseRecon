@@ -102,6 +102,11 @@ type Options struct {
 	PortsRate int
 	// PortsGrabBanner 是否抓 banner
 	PortsGrabBanner bool
+	// PortsCache 端口扫描结果缓存（nil = 不缓存）
+	//
+	// ⭐ 与 TechCache 同属"性能优化"，不影响采集逻辑本身。
+	//   缓存键由 portscan.MakeCacheKey 生成（含实际发送的 Host 头）。
+	PortsCache portscan.PortCache
 
 	// ⭐ HTTP 指纹采集（主动探测，默认关）
 	TechProbe bool
@@ -159,6 +164,8 @@ func DefaultOptions() Options {
 		PortsTimeout:    3 * time.Second,
 		PortsRate:       100,
 		PortsGrabBanner: true,
+		// ⭐ 端口缓存默认 nil（由 CLI 注入；换机后缓存为空是正常的）
+		PortsCache: nil,
 		// ⭐ HTTP 指纹（主动，默认关）
 		TechProbe:       false,
 		TechTimeout:     8 * time.Second,
@@ -344,6 +351,8 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 			pcfg.RateLimit = r.opt.PortsRate
 			pcfg.GrabBanner = r.opt.PortsGrabBanner
 			pcfg.Concurrency = 32
+			// ⭐ 端口结果缓存（nil = 不缓存；命中时不会发起连接）
+			pcfg.Cache = r.opt.PortsCache
 			for _, ip := range rep.DNS.IPs {
 				pcfg.Hosts = append(pcfg.Hosts, ip)
 			}

@@ -379,7 +379,7 @@ func (p *ProbeResult) ProductInfo() (name, category string, ok bool) {
 	if p.FaviconMurmur == 0 {
 		return "", "", false
 	}
-	fp, ok := faviconHashTable[p.FaviconMurmur]
+	fp, ok := lookupFaviconProduct(p.FaviconMurmur)
 	if !ok {
 		return "", "", false
 	}
@@ -450,7 +450,7 @@ func (p *ProbeResult) FaviconProduct() string {
 	if p.FaviconMurmur == 0 {
 		return ""
 	}
-	if fp, ok := faviconHashTable[p.FaviconMurmur]; ok {
+	if fp, ok := lookupFaviconProduct(p.FaviconMurmur); ok {
 		return fp.name
 	}
 	return ""
@@ -461,7 +461,8 @@ func (p *ProbeResult) FaviconProductInfo() faviconProduct {
 	if p.FaviconMurmur == 0 {
 		return faviconProduct{}
 	}
-	return faviconHashTable[p.FaviconMurmur]
+	fp, _ := lookupFaviconProduct(p.FaviconMurmur)
+	return fp
 }
 
 // serverProductOf 从 Server 头推断产品

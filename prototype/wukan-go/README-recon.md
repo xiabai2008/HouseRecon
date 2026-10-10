@@ -151,6 +151,7 @@ wukan recon example.com --hosts >> /etc/hosts
 |---|---|---|---|
 | IP 归属 | `~/.wukan/ipinfo-cache.json` | 7 天 | ipwho.is 10000 次/月 |
 | **CT 证书** | `~/.wukan/ct-cache.json` | 7 天 | ⭐ certspotter **100 次/小时** |
+| 端口扫描 | `~/.wukan/ports-cache.json` | 6 小时（filtered/error 10 分钟） | ⭐ 复核阶段不必重新连接目标（`--ports` / `ports` 共用） |
 
 **空结果不写缓存** —— 否则一次限流会被缓存成"该域无子域"，污染后续所有查询。
 

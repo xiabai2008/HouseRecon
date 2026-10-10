@@ -72,6 +72,10 @@ type PortResult struct {
 	//   filtered 无法区分"被防火墙丢掉的开放端口"和"根本不存在的端口"。
 	//   所以"开放"的结论有多可靠，取决于有多少佐证。
 	Confidence int `json:"confidence"`
+	// Cached ⭐ 该结果来自本地缓存（非本次实时探测）
+	Cached bool `json:"cached,omitempty"`
+	// CacheAge 缓存结果的年龄（缓存命中时填写）
+	CacheAge string `json:"cache_age,omitempty"`
 	// Err 错误信息
 	Err string `json:"error,omitempty"`
 }
@@ -285,6 +289,12 @@ type Config struct {
 	//   （甚至只有正确 Host 才返回首页）。用 IP 请求会拿到默认站点，
 	//   导致 banner 里的 Server / 页面特征判断错误。
 	HostHeader string
+	// Cache 端口结果缓存（nil = 不缓存）
+	//
+	// ⭐ 缓存键由 MakeCacheKey 生成（含实际发送的 Host 头 —— 同一个 IP
+	//   上不同 Host 可能是不同站点）。Scanner 在探测前后自动读写，
+	//   缓存命中时不会发起任何连接。
+	Cache PortCache
 }
 
 // DefaultConfig 默认配置
@@ -355,13 +365,14 @@ func (r *rateLimiter) wait() {
 
 // Scanner 端口扫描器
 type Scanner struct {
-	cfg  Config
-	rate *rateLimiter
+	cfg   Config
+	rate  *rateLimiter
+	cache PortCache
 }
 
 // New 创建扫描器
 func New(cfg Config) *Scanner {
-	return &Scanner{cfg: cfg, rate: newRateLimiter(cfg.RateLimit)}
+	return &Scanner{cfg: cfg, rate: newRateLimiter(cfg.RateLimit), cache: cfg.Cache}
 }
 
 // ScanHost 扫描单个主机的所有配置端口
@@ -437,8 +448,35 @@ func (s *Scanner) ScanAll(onProgress func(host string, done, total int)) []PortR
 	return all
 }
 
-// probe 探测单个端口
+// probe 探测单个端口（含缓存读写）
+//
+// ⭐ 缓存命中时不发起任何连接、也不占用限速令牌 —— 这是缓存省时的关键。
 func (s *Scanner) probe(host, ip string, port int) PortResult {
+	var cacheKey string
+	if s.cache != nil {
+		// 键里的 Host 头必须是**实际会发送**的那个：
+		// HTTP 类端口的 banner 取决于 Host（见 grabBanner 与 MakeCacheKey 注释）
+		effHost := host
+		if s.cfg.HostHeader != "" {
+			effHost = s.cfg.HostHeader
+		}
+		cacheKey = MakeCacheKey(ip, port, effHost, s.cfg.GrabBanner, s.cfg.TLSProbe)
+		if cached, ok := s.cache.Get(cacheKey); ok {
+			// ⭐ Host 用本次调用方的写法覆盖 —— 同一个 IP 可能经不同主机名访问
+			cached.Host = host
+			return *cached
+		}
+	}
+
+	r := s.doProbe(host, ip, port)
+	if s.cache != nil {
+		s.cache.Put(cacheKey, &r)
+	}
+	return r
+}
+
+// doProbe 实际执行探测（不含缓存逻辑）
+func (s *Scanner) doProbe(host, ip string, port int) PortResult {
 	r := PortResult{Host: host, IP: ip, Port: port}
 	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 

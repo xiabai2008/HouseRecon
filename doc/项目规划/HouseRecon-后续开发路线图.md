@@ -33,7 +33,7 @@ go build -o wukan.exe ./cmd/wukan
 # ③ 冒烟测试：应看到 ASCII 启动页
 ./wukan.exe help
 
-# ④ 单元测试：应 39 项全过
+# ④ 单元测试：应 58 项全过
 go test ./...
 # 期望输出：ok  github.com/wukan/wukan/internal/httpprobe
 #           ok  github.com/wukan/wukan/internal/ipinfo
@@ -176,8 +176,8 @@ cd prototype/wukan-go
 
 | # | 任务 | 价值 | 预估 |
 |---|---|---|---|
-| P0-1 | **端口扫描结果缓存** | 同 tech 思路。端口状态变化比指纹快，TTL 建议 **6 小时**（非 1 天） | 小 |
-| P0-2 | **favicon 表支持外部加载** | 现在改一条哈希就要重编译。支持 `~/.wukan/favicon-extra.json` 覆盖/扩充 | 小 |
+| P0-1 | ✅ **端口扫描结果缓存**（已完成 2026-10-10：正 6h / 负 10min，缓存键含 Host 头） | 同 tech 思路。端口状态变化比指纹快，TTL 建议 **6 小时**（非 1 天） | 小 |
+| P0-2 | ✅ **favicon 表支持外部加载**（已完成 2026-10-10：`~/.wukan/favicon-extra.json` 覆盖/扩充，容忍 BOM） | 现在改一条哈希就要重编译。支持 `~/.wukan/favicon-extra.json` 覆盖/扩充 | 小 |
 | P0-3 | **tech 失败子域重试** | 实测有 4 个子域重定向后超时；失败时改试 http:// 或跳过重定向 | 小 |
 | P0-4 | **给 hackertarget 加 key 支持** | 免费层仅 50 次/天，批量场景根本不够 | 小 |
 
@@ -202,8 +202,8 @@ cd prototype/wukan-go
 ### 优先级建议
 
 ```
-先做 P0-1 + P0-2  （都是小活，一个下午能完）
-再 P0-3 + P0-4     （补齐数据源短板）
+✅ P0-1 + P0-2  已完成（2026-10-10）
+▶ 下一步：P0-3 + P0-4（补齐数据源短板）
 然后 P1-1          （diff 是最有产品价值的一步）
 ```
 
@@ -247,7 +247,7 @@ cd prototype/wukan-go
 cd prototype/wukan-go
 gofmt -l .                  # 应为空
 go vet ./...                # 应无输出
-go test ./...               # 应 39 项全过（新增功能需补测试）
+go test ./...               # 应 58 项全过（新增功能需补测试）
 go build -o wukan.exe ./cmd/wukan
 ```
 

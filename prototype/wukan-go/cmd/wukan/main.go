@@ -732,6 +732,10 @@ type reconFlags struct {
 	scanPorts  string
 	portsRate  int
 	portsNoBan bool
+	// ⭐ 端口结果缓存
+	noPortsCache    bool
+	portsCacheStats bool
+	portsCacheClear bool
 	// ⭐ HTTP 指纹采集（主动探测）
 	doTech         bool
 	techNoFav      bool
@@ -841,6 +845,54 @@ func runRecon(args []string) {
 			fmt.Fprintf(os.Stderr, "提示: tech 缓存不可用（%v）\n", err)
 		}
 	}
+
+	// ⭐ 端口扫描结果缓存（与 tech 同思路；TTL 6 小时，filtered/error 10 分钟）
+	if f.portsCacheClear {
+		if pc, err := portscan.NewFilePortCache(
+			portscan.DefaultPortCachePath(), 0, true); err == nil {
+			_ = pc.Clear()
+			fmt.Println("已清空端口扫描缓存")
+			return
+		}
+	}
+	if f.portsCacheStats {
+		if pc, err := portscan.NewFilePortCache(
+			portscan.DefaultPortCachePath(), 0, true); err == nil {
+			h, _, tot := pc.Stats()
+			fmt.Printf("端口扫描缓存: %s\n", portscan.DefaultPortCachePath())
+			fmt.Printf("  条目数: %d\n", pc.Len())
+			if tot > 0 {
+				fmt.Printf("  本次命中: %d / %d (%.0f%%)\n", h, tot,
+					float64(h)/float64(tot)*100)
+			} else {
+				fmt.Println("  本次无查询")
+			}
+			for _, r := range pc.ListEntries() {
+				fmt.Println("   ", r)
+			}
+		}
+		return
+	}
+	if !f.noPortsCache {
+		pc, err := portscan.NewFilePortCache(
+			portscan.DefaultPortCachePath(), 0, true)
+		if err == nil {
+			opt.PortsCache = pc
+			defer func() { _ = pc.Save() }()
+		} else {
+			fmt.Fprintf(os.Stderr, "提示: 端口缓存不可用（%v）\n", err)
+		}
+	}
+	// ⭐ favicon 扩展表（~/.wukan/favicon-extra.json，可选；覆盖/扩充内置表）
+	//   只在开启 --tech 时相关（冲突检测的输入）
+	if f.doTech {
+		if n, err := httpprobe.LoadFaviconExtra(httpprobe.DefaultFaviconExtraPath()); err != nil {
+			fmt.Fprintf(os.Stderr, "提示: favicon 扩展表加载失败（%v），仅用内置表\n", err)
+		} else if n > 0 && !f.quiet {
+			fmt.Fprintf(os.Stderr, "已加载 favicon 扩展表: %d 条\n", n)
+		}
+	}
+
 	// ⭐ rDNS 反查默认开启（纯被动 DNS 查询，不向目标发包）
 	opt.RDNS = !f.noRdns
 	if f.rdnsMax > 0 {
@@ -1083,6 +1135,12 @@ func parseReconFlags(args []string) *reconFlags {
 			f.portsRate = intArg(nextArg(args, &i, a), 100)
 		case "--no-banner":
 			f.portsNoBan = true
+		case "--no-ports-cache":
+			f.noPortsCache = true
+		case "--ports-cache-stats":
+			f.portsCacheStats = true
+		case "--ports-cache-clear":
+			f.portsCacheClear = true
 		case "--quic-probes":
 			f.quicProbes = intArg(nextArg(args, &i, a), 2)
 		case "--no-passive":
@@ -1161,6 +1219,9 @@ func printReconUsage() {
       --tech-no-favicon 指纹采集不抓 favicon（更快）
       --ports-rate <n>  端口扫描限速（默认 100/s）
       --no-banner       端口扫描不抓 banner（更快）
+      --no-ports-cache  不用端口扫描缓存（强制重新扫描）
+      --ports-cache-stats 查看端口扫描缓存统计后退出
+      --ports-cache-clear 清空端口扫描缓存后退出
       --quic           ⭐ 开启 QUIC/UDP-443 探活（主动探测，默认关）
       --quic-probes <n>  QUIC 每目标探测包数（默认 2）
       --no-rdap        跳过注册信息查询
@@ -1250,10 +1311,43 @@ type portsFlags struct {
 	showAll     bool
 	quiet       bool
 	noColor     bool
+	// ⭐ 端口结果缓存
+	noCache    bool
+	cacheStats bool
+	cacheClear bool
 }
 
 func runPorts(args []string) {
 	f := parsePortsFlags(args)
+
+	// ⭐ 缓存管理子操作（不需要目标即可执行）
+	if f.cacheClear {
+		if pc, err := portscan.NewFilePortCache(
+			portscan.DefaultPortCachePath(), 0, true); err == nil {
+			_ = pc.Clear()
+			fmt.Println("已清空端口扫描缓存")
+			return
+		}
+	}
+	if f.cacheStats {
+		if pc, err := portscan.NewFilePortCache(
+			portscan.DefaultPortCachePath(), 0, true); err == nil {
+			h, _, tot := pc.Stats()
+			fmt.Printf("端口扫描缓存: %s\n", portscan.DefaultPortCachePath())
+			fmt.Printf("  条目数: %d\n", pc.Len())
+			if tot > 0 {
+				fmt.Printf("  本次命中: %d / %d (%.0f%%)\n", h, tot,
+					float64(h)/float64(tot)*100)
+			} else {
+				fmt.Println("  本次无查询")
+			}
+			for _, r := range pc.ListEntries() {
+				fmt.Println("   ", r)
+			}
+		}
+		return
+	}
+
 	targets := collectHosts(args)
 	if len(targets) == 0 {
 		printPortsUsage()
@@ -1286,6 +1380,19 @@ func runPorts(args []string) {
 	cfg.GrabBanner = !f.noBanner
 	cfg.TLSProbe = f.tlsProbe
 
+	// ⭐ 端口扫描结果缓存（覆盖"扫 → 复核 → 写报告"循环；--no-cache 可绕过）
+	var pCache *portscan.FilePortCache
+	if !f.noCache {
+		pc, err := portscan.NewFilePortCache(portscan.DefaultPortCachePath(), 0, true)
+		if err == nil {
+			cfg.Cache = pc
+			pCache = pc
+			defer func() { _ = pc.Save() }()
+		} else {
+			fmt.Fprintf(os.Stderr, "提示: 端口缓存不可用（%v），本次不缓存\n", err)
+		}
+	}
+
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr,
 			"[%s] ⚠ 主动探测 %d 个主机 × %d 个端口 | 并发 %d | 限速 %d/s\n",
@@ -1311,6 +1418,14 @@ func runPorts(args []string) {
 	if err := emitPorts(f, results, summary, elapsed); err != nil {
 		fmt.Fprintf(os.Stderr, "输出失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// ⭐ 缓存命中提示（让用户知道有多少结果不是本次实时探测的）
+	if pCache != nil && !f.quiet && f.format != "ips" && f.format != "ports" {
+		if hits, _, tot := pCache.Stats(); hits > 0 && tot > 0 {
+			fmt.Fprintf(os.Stderr,
+				"⭐ 缓存命中 %d/%d 个端口（结果来自本地缓存，未实际连接）\n", hits, tot)
+		}
 	}
 
 	if !f.quiet && f.format != "ips" && f.format != "ports" {
@@ -1420,6 +1535,12 @@ func parsePortsFlags(args []string) *portsFlags {
 			f.showAll = true
 		case "-q", "--quiet":
 			f.quiet = true
+		case "--no-cache":
+			f.noCache = true
+		case "--cache-stats":
+			f.cacheStats = true
+		case "--clear-cache":
+			f.cacheClear = true
 		}
 	}
 	if f.concurrency < 1 {
@@ -1482,6 +1603,15 @@ func printPortsUsage() {
       --tls              对疑似 TLS 端口做握手（更准但更慢）
   -a, --all              显示全部端口（含 closed/filtered）
   -q, --quiet            只输出结果
+
+⭐ 结果缓存（默认开启）:
+  端口结果缓存在 ~/.wukan/ports-cache.json，TTL 6 小时；
+  filtered/error 属**不确定结论**，只用 10 分钟短 TTL（防止抖动被固化）。
+  缓存命中时不会发起任何连接，结果行会标注 [缓存]。
+      --no-cache         不用缓存（强制重新扫描）
+      --cache-stats      查看缓存统计后退出
+      --clear-cache      清空缓存后退出
+
   -h, --help             显示本帮助
 
 置信度:
@@ -1585,6 +1715,13 @@ func runTech(args []string) {
 	if len(urls) == 0 {
 		printTechUsage()
 		os.Exit(2)
+	}
+
+	// ⭐ favicon 扩展表（~/.wukan/favicon-extra.json，可选；覆盖/扩充内置表）
+	if n, err := httpprobe.LoadFaviconExtra(httpprobe.DefaultFaviconExtraPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "提示: favicon 扩展表加载失败（%v），仅用内置表\n", err)
+	} else if n > 0 && !f.quiet {
+		fmt.Fprintf(os.Stderr, "已加载 favicon 扩展表: %d 条\n", n)
 	}
 
 	cfg := httpprobe.DefaultConfig()
@@ -1922,6 +2059,15 @@ favicon 哈希说明:
   + RFC 2045 每 76 字符换行 + 有符号 int32。
   调研报告指出中文教程普遍漏掉换行步骤，导致 hash 永远对不上 Shodan。
   本实现有 15 项标准向量交叉验证。
+
+favicon 扩展表（可选）:
+  内置表 23 条（全部实测）。可通过 ~/.wukan/favicon-extra.json
+  覆盖/扩充，无需重编译：
+    {"entries": [
+      {"hash": 116323821, "name": "SonarQube", "category": "代码质量"}
+    ]}
+  hash 可写整数或整数字符串；同名 hash 外部优先；category 可省略。
+  ⚠️ 数据须实测后填入 —— 填错的哈希只会静默失效，不会报错。
 
 示例:
   wukan tech https://example.com
