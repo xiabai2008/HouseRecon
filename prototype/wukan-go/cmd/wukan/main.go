@@ -1127,6 +1127,27 @@ func emitRecon(f *reconFlags, results []reconJob) error {
 		enc.SetIndent("", "  ")
 		enc.SetEscapeHTML(false)
 		return enc.Encode(reps)
+	case "md", "markdown":
+		// ⭐ 报告导出（P1-4）：交付/存档用
+		for i, r := range results {
+			if i > 0 {
+				fmt.Fprintln(out)
+			}
+			if err := recon.WriteMarkdown(out, r.rep); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "html":
+		for i, r := range results {
+			if i > 0 {
+				fmt.Fprintln(out)
+			}
+			if err := recon.WriteHTML(out, r.rep); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "hosts":
 		for _, r := range results {
 			recon.WriteHosts(out, r.rep)
@@ -1156,6 +1177,10 @@ func inferReconFormat(path string) string {
 		return "json"
 	case ".hosts":
 		return "hosts"
+	case ".md", ".markdown":
+		return "markdown"
+	case ".html", ".htm":
+		return "html"
 	default:
 		return ""
 	}
@@ -1295,10 +1320,12 @@ func printReconUsage() {
 
 参数:
   -o, --output <文件>   输出到文件
-      --format <格式>   table（默认）/ json / hosts / subs
+      --format <格式>   table（默认）/ json / hosts / subs / markdown / html
       --json            等价于 --format json
       --hosts           输出 hosts 格式（可直接导入）
       --subs            只输出子域列表（一行一个）
+      --format markdown ⭐ 交付/存档报告（.md 扩展名自动推断）
+      --format html     ⭐ 自包含 HTML 报告（.html 扩展名自动推断，单文件可直接分享）
   -d, --dns <解析器>    alidns（默认）/ cloudflare / google / quad9 / 360 / dnspod
                         也可直接传 DoH URL
   -n <数量>            表格最多显示多少个子域（默认 30）
