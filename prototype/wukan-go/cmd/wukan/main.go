@@ -46,6 +46,8 @@ func main() {
 		runTech(os.Args[2:])
 	case "diff":
 		runDiff(os.Args[2:])
+	case "timeline":
+		runTimeline(os.Args[2:])
 	case "version", "-v", "--version":
 		printVersion(os.Stdout)
 	case "help", "-h", "--help":
@@ -183,6 +185,7 @@ func printUsageTo(w io.Writer) {
   ports <主机...>     端口扫描（⚠ 主动探测，需指定端口）
   ipinfo <IP...>      IP 归属批量查询
   diff <域名...>      ⭐ 快照对比（变化监控，需先 recon --snapshot）
+  timeline <域名...>  ⭐ 本地资产时间线（何时迁移、迁移到哪）
   version             显示版本
   help                显示本帮助
 
@@ -737,6 +740,7 @@ type reconFlags struct {
 	noRDAP     bool
 	noCT       bool
 	noPassive  bool
+	noTimeline bool
 	reverseLim int
 	doQuic     bool
 	quicProbes int
@@ -922,6 +926,8 @@ func runRecon(args []string) {
 		opt.RDNSMaxIP = f.rdnsMax
 	}
 	opt.Passive.Enabled = !f.noPassive
+	// ⭐ 时间线（P2-1）：OTX 历史解析，独立开关
+	opt.Passive.Timeline = !f.noTimeline
 	if f.reverseLim > 0 {
 		opt.Passive.ReverseIPLimit = f.reverseLim
 	}
@@ -1224,6 +1230,8 @@ func parseReconFlags(args []string) *reconFlags {
 			f.quicProbes = intArg(nextArg(args, &i, a), 2)
 		case "--no-passive":
 			f.noPassive = true
+		case "--no-timeline":
+			f.noTimeline = true
 		case "--reverse":
 			f.reverseLim = intArg(nextArg(args, &i, a), 3)
 		case "--no-ipinfo":
@@ -1310,6 +1318,7 @@ func printReconUsage() {
       --no-rdap        跳过注册信息查询
       --no-ct          跳过证书透明度查询
       --no-passive     跳过被动 DNS 历史解析
+      --no-timeline    跳过 OTX 历史时间线（P2-1，"何时迁移、迁移到哪"）
       --no-ipinfo      跳过 IP 归属查询
       --no-verify      跳过子域的 DNS 解析验证（更快）
       --all-domains    CT 结果包含非子域条目（如 example-int.com 这类平行域）
@@ -2205,6 +2214,107 @@ func strings_Repeat(s string, n int) string {
 }
 
 func newCSVWriter(w io.Writer) *csv.Writer { return csv.NewWriter(w) }
+
+// ── timeline 子命令（本地快照时间线）──────────────────────
+
+type timelineFlags struct {
+	format string
+}
+
+func runTimeline(args []string) {
+	f := parseTimelineFlags(args)
+	targets := collectDomains(args)
+	if len(targets) == 0 {
+		printTimelineUsage()
+		os.Exit(2)
+	}
+
+	store := recon.NewSnapshotStore(recon.DefaultSnapshotDir(), recon.DefaultSnapshotKeep)
+	failed := 0
+	var tls []*recon.LocalTimeline
+	for _, target := range targets {
+		snaps, err := store.Load(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %s: %v\n", target, err)
+			failed++
+			continue
+		}
+		if len(snaps) == 0 {
+			norm := recon.NormalizeTarget(target)
+			fmt.Fprintf(os.Stderr, "错误: %s: 没有快照记录（先运行: wukan recon %s --snapshot）\n",
+				norm, norm)
+			failed++
+			continue
+		}
+		tls = append(tls, recon.BuildLocalTimeline(snaps))
+	}
+
+	if f.format == "json" {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
+		var err error
+		if len(tls) == 1 {
+			err = enc.Encode(tls[0])
+		} else {
+			err = enc.Encode(tls)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "输出失败: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		for i, tl := range tls {
+			if i > 0 {
+				fmt.Fprintln(os.Stdout)
+			}
+			recon.WriteLocalTimeline(os.Stdout, tl)
+		}
+	}
+
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+func parseTimelineFlags(args []string) *timelineFlags {
+	f := &timelineFlags{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printTimelineUsage()
+			os.Exit(0)
+		case "--json":
+			f.format = "json"
+		}
+	}
+	return f
+}
+
+func printTimelineUsage() {
+	fmt.Fprint(os.Stderr, `wukan timeline — 本地资产时间线（何时迁移、迁移到哪）
+
+用法:
+  wukan timeline <域名...>
+  wukan timeline example.com --json
+
+⭐ 数据来自**本地快照历史**（recon --snapshot 累积），零外部依赖：
+   · 每个解析 IP / 子域 / 端口的首见与末见时间
+   · IP 迁移轨迹（按首次出现排序）
+   · 标出"已消失"的资产
+
+需要先有历史快照：
+  wukan recon example.com --snapshot    # 每次运行存一份（建议定时任务）
+  wukan timeline example.com
+
+💡 更早的历史（接入工具之前）可配 OTX 时间线：
+   设置环境变量 WUKAN_OTX_KEY（免费注册）后，recon 会自动采集
+
+参数:
+      --json          输出 JSON
+  -h, --help           显示本帮助
+`)
+}
 
 // ── diff 子命令（快照对比 / 变化监控）─────────────────────
 

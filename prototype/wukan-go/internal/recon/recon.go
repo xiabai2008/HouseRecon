@@ -1271,6 +1271,93 @@ func Analyze(rep *Report) []Finding {
 				"要找源站需做 CDN 绕过：查历史 DNS 解析、证书历史、rDNS 反查。",
 			cdnIPs...)
 	}
+
+	// ── 源站候选推断（P2-2：CDN 之下的历史 IP 线索）──
+	//
+	// ⭐ 推断逻辑（全被动，不做任何探测）：
+	//   CDN 边缘节点会掩盖真实源站；而源站 IP 通常留在**接入 CDN 之前**
+	//   的解析历史里。用被动 DNS 历史 + 反向 IP 数据交叉给出候选。
+	//
+	// ⚠️ 合规红线：候选 IP 可能已被释放/转卖 —— 只做线索提示，
+	//   **不自动探测**，明确要求人工核实归属后再手工验证。
+	if len(cdnIPs) > 0 && rep.Passive != nil && rep.DNS != nil {
+		current := map[string]bool{}
+		for _, ip := range rep.DNS.IPs {
+			current[ip] = true
+		}
+		revByIP := map[string][]string{}
+		for _, rv := range rep.ReverseIP {
+			if rv != nil && len(rv.Hostnames) > 0 {
+				revByIP[rv.IP] = rv.Hostnames
+			}
+		}
+		lastByIP := map[string]time.Time{}
+		for _, e := range rep.Passive.Timeline {
+			if e.LastSeen.IsZero() {
+				continue
+			}
+			if cur, ok := lastByIP[e.IP]; !ok || e.LastSeen.After(cur) {
+				lastByIP[e.IP] = e.LastSeen
+			}
+		}
+		var candidates []string
+		for _, ip := range rep.Passive.AllIPs() {
+			if current[ip] {
+				continue
+			}
+			ev := ip
+			if t := lastByIP[ip]; !t.IsZero() {
+				ev += fmt.Sprintf("（最后出现 %s）", t.Format("2006-01"))
+			}
+			if hs := revByIP[ip]; len(hs) > 0 {
+				ev += fmt.Sprintf("；反查同 IP 另有 %d 个域名", len(hs))
+			}
+			candidates = append(candidates, ev)
+			if len(candidates) >= 5 {
+				break
+			}
+		}
+		if len(candidates) > 0 {
+			add("low", "origin_candidate",
+				fmt.Sprintf("发现 %d 个疑似源站候选（CDN 之外的历史解析 IP）", len(candidates)),
+				"该域当前走 CDN（边缘节点会掩盖真实源站），但被动 DNS 显示历史上曾解析到以下**非当前** IP。\n"+
+					"推断逻辑：源站 IP 通常出现在接入 CDN 之前的解析历史中。\n"+
+					"⚠️ 合规提醒：这些 IP 可能已不属于你（被释放/转卖）。**不要直接探测归属不明的 IP** —— "+
+					"先用 WHOIS/BGP/云控制台核实归属；确认属于自己后，再手工用 Host 头验证是否仍提供本站内容。",
+				candidates...)
+		}
+	}
+
+	// ── 被动 DNS 时间线（P2-1：何时迁移、迁移到哪）──
+	if rep.Passive != nil && len(rep.Passive.Timeline) > 0 {
+		chain := timelineChain(rep.Passive.Timeline, rep.Target)
+		if len(chain) >= 2 {
+			latest := chain[len(chain)-1]
+			prevIP := chain[len(chain)-2]
+			first := "?"
+			if !latest.FirstSeen.IsZero() {
+				first = latest.FirstSeen.Format("2006-01-02")
+			}
+			var ev []string
+			for _, e := range chain {
+				f, l := "?", "?"
+				if !e.FirstSeen.IsZero() {
+					f = e.FirstSeen.Format("2006-01-02")
+				}
+				if !e.LastSeen.IsZero() {
+					l = e.LastSeen.Format("2006-01-02")
+				}
+				ev = append(ev, fmt.Sprintf("%s: %s → %s", e.IP, f, l))
+			}
+			add("info", "pdn_migration",
+				fmt.Sprintf("根域历史解析过 %d 个 IP（最近新增 %s 于 %s）", len(chain), latest.IP, first),
+				"时间线来自被动 DNS 历史记录（first/last seen），能看出**何时迁移、迁移到哪**。\n"+
+					"用途：① 核对资产迁移记录 ② 旧 IP 若仍可访问且已不属于你，注意清理解析残留 "+
+					"③ 与快照 diff 配合观察未来变化。\n"+
+					"最近一次变更："+prevIP.IP+" → "+latest.IP,
+				ev...)
+		}
+	}
 	if len(cloudIPs) > 0 {
 		add("low", "cloud_detected",
 			fmt.Sprintf("IP 属于云服务商（%d 个）", len(cloudIPs)),

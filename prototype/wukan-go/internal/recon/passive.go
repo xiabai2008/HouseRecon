@@ -34,12 +34,23 @@ type HistoricalIP struct {
 	Last    time.Time `json:"last_seen,omitempty"`
 }
 
+// PDNSTimelineEntry 一条带时间戳的历史解析记录（P2-1 时间线）
+type PDNSTimelineEntry struct {
+	Hostname  string    `json:"hostname"`
+	IP        string    `json:"ip"`
+	FirstSeen time.Time `json:"first_seen,omitempty"`
+	LastSeen  time.Time `json:"last_seen,omitempty"`
+	Source    string    `json:"source,omitempty"`
+}
+
 // PassiveDNSResult 被动 DNS 结果
 type PassiveDNSResult struct {
 	// Records 子域 → 历史 IP 列表
 	Records map[string][]string `json:"records,omitempty"`
 	// IPFirstSeen 每个 IP 首次出现时间
 	IPFirstSeen map[string]time.Time `json:"ip_first_seen,omitempty"`
+	// Timeline ⭐ 带时间戳的历史解析（OTX，P2-1）——"何时迁移、迁移到哪"
+	Timeline []PDNSTimelineEntry `json:"timeline,omitempty"`
 	// TotalEntries 原始条目数
 	TotalEntries int `json:"total_entries,omitempty"`
 	// SourcesUsed 实际可用的源
@@ -338,6 +349,8 @@ type PassiveOptions struct {
 	Enabled bool
 	// HostSearch 是否做子域→IP 查询
 	HostSearch bool
+	// Timeline 是否查询 OTX 历史时间线（P2-1，免费无 key）
+	Timeline bool
 	// ReverseIPLimit 最多对多少个 IP 做反查（配额紧）
 	ReverseIPLimit int
 	// Timeout 超时
@@ -353,7 +366,8 @@ func DefaultPassiveOptions() PassiveOptions {
 	return PassiveOptions{
 		Enabled:        true,
 		HostSearch:     true,
-		ReverseIPLimit: 3, // ⭐ 配额只有 50/天，默认保守
+		Timeline:       true, // ⭐ OTX 免费，默认开启（失败自动降级）
+		ReverseIPLimit: 3,    // ⭐ 配额只有 50/天，默认保守
 		Timeout:        30 * time.Second,
 		Concurrency:    2, // hackertarget 对并发敏感
 	}
@@ -363,6 +377,9 @@ func DefaultPassiveOptions() PassiveOptions {
 type PassiveCache interface {
 	GetPassive(key string) (map[string][]string, bool)
 	PutPassive(key string, records map[string][]string)
+	// GetTimeline / PutTimeline 时间线缓存（P2-1）
+	GetTimeline(key string) ([]PDNSTimelineEntry, bool)
+	PutTimeline(key string, entries []PDNSTimelineEntry)
 }
 
 // CollectPassive 收集被动 DNS 资产
@@ -381,6 +398,9 @@ func CollectPassive(ctx context.Context, domain string, opt PassiveOptions) *Pas
 		if cached, ok := opt.Cache.GetPassive("hostsearch:" + domain); ok && len(cached) > 0 {
 			res.Records = cached
 			res.SourcesUsed = append(res.SourcesUsed, "cache")
+			// ⭐ 时间线单独补齐：hostsearch 有缓存不代表时间线也有
+			//   （否则缓存命中的运行永远看不到时间线）
+			collectTimeline(ctx, domain, opt, res)
 			res.Elapsed = time.Since(start).String()
 			return res
 		}
@@ -416,8 +436,44 @@ func CollectPassive(ctx context.Context, domain string, opt PassiveOptions) *Pas
 		res.SourcesUsed = append(res.SourcesUsed, "hackertarget/dnslookup")
 	}
 
+	// ⭐ 时间线（P2-1）：OTX 带时间戳的历史解析 ——"何时迁移、迁移到哪"
+	collectTimeline(ctx, domain, opt, res)
+
 	res.Elapsed = time.Since(start).String()
 	return res
+}
+
+// collectTimeline 查询（或读缓存）OTX 历史时间线（P2-1）
+//
+// 失败不致命：记录到 SourcesFailed 并继续（OTX 挂了不影响 hostsearch 的结果）。
+func collectTimeline(ctx context.Context, domain string, opt PassiveOptions, res *PassiveDNSResult) {
+	if !opt.Timeline || res == nil {
+		return
+	}
+	key := "timeline:" + domain
+	if opt.Cache != nil {
+		if tl, ok := opt.Cache.GetTimeline(key); ok && len(tl) > 0 {
+			res.Timeline = tl
+			res.SourcesUsed = append(res.SourcesUsed, "otx/cache")
+			return
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, opt.Timeout)
+	defer cancel()
+	entries, err := NewOTX(opt.Timeout).PassiveDNS(cctx, domain)
+	if err != nil {
+		res.SourcesFailed["otx/passive_dns"] = err.Error()
+		return
+	}
+	if len(entries) == 0 {
+		// 无记录不算失败（该域可能确实没有历史）
+		return
+	}
+	res.Timeline = entries
+	res.SourcesUsed = append(res.SourcesUsed, "otx/passive_dns")
+	if opt.Cache != nil {
+		opt.Cache.PutTimeline(key, entries)
+	}
 }
 
 func countRecords(recs map[string][]string) int {
@@ -487,7 +543,8 @@ type FilePassiveCache struct {
 }
 
 type passiveCacheEntry struct {
-	Records  map[string][]string `json:"records"`
+	Records  map[string][]string `json:"records,omitempty"`
+	Timeline []PDNSTimelineEntry `json:"timeline,omitempty"`
 	CachedAt int64               `json:"cached_at"`
 }
 
@@ -562,6 +619,27 @@ func (c *FilePassiveCache) PutPassive(key string, records map[string][]string) {
 	c.mu.Unlock()
 }
 
+// GetTimeline 读时间线缓存（P2-1）
+func (c *FilePassiveCache) GetTimeline(key string) ([]PDNSTimelineEntry, bool) {
+	c.mu.RLock()
+	e, ok := c.items[key]
+	c.mu.RUnlock()
+	if !ok || len(e.Timeline) == 0 {
+		return nil, false
+	}
+	if c.ttl > 0 && time.Since(time.Unix(e.CachedAt, 0)) > c.ttl {
+		return nil, false
+	}
+	return e.Timeline, true
+}
+
+// PutTimeline 写时间线缓存（P2-1）
+func (c *FilePassiveCache) PutTimeline(key string, entries []PDNSTimelineEntry) {
+	c.mu.Lock()
+	c.items[key] = passiveCacheEntry{Timeline: entries, CachedAt: time.Now().Unix()}
+	c.mu.Unlock()
+}
+
 // Save 落盘
 func (c *FilePassiveCache) Save() error { return c.save() }
 
@@ -580,4 +658,23 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// timelineChain 提取某主机名的时间线并按首次出现排序（P2-1）
+//
+// ⭐ 输出即"迁移轨迹"：IP 按首次出现排序后，相邻跳变 = 一次迁移。
+func timelineChain(entries []PDNSTimelineEntry, hostname string) []PDNSTimelineEntry {
+	var out []PDNSTimelineEntry
+	for _, e := range entries {
+		if strings.EqualFold(e.Hostname, hostname) {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].FirstSeen.Equal(out[j].FirstSeen) {
+			return out[i].FirstSeen.Before(out[j].FirstSeen)
+		}
+		return out[i].IP < out[j].IP
+	})
+	return out
 }

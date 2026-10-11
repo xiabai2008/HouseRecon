@@ -271,6 +271,38 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 		}
 	}
 
+	// ── 被动 DNS 时间线（P2-1：何时迁移、迁移到哪）──
+	if rep.Passive != nil && len(rep.Passive.Timeline) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "【被动 DNS 时间线】记录 %d 条（带时间戳的历史解析）\n",
+			len(rep.Passive.Timeline))
+		// ⭐ 根域的迁移轨迹（最有价值的部分）
+		rootChain := timelineChain(rep.Passive.Timeline, rep.Target)
+		if len(rootChain) > 0 {
+			fmt.Fprintf(w, "  ⭐ %s 的迁移轨迹（按首次出现排序）:\n", rep.Target)
+			for _, e := range rootChain {
+				first := "?"
+				if !e.FirstSeen.IsZero() {
+					first = e.FirstSeen.Format("2006-01-02")
+				}
+				last := "现在"
+				if !e.LastSeen.IsZero() {
+					last = e.LastSeen.Format("2006-01-02")
+				}
+				fmt.Fprintf(w, "     %-42s %s → %s\n", e.IP, first, last)
+			}
+		}
+		// 其余主机名概览（完整时间线在 JSON 的 timeline 字段）
+		hosts := map[string]bool{}
+		for _, e := range rep.Passive.Timeline {
+			hosts[e.Hostname] = true
+		}
+		if len(hosts) > 1 {
+			fmt.Fprintf(w, "  其余 %d 个主机名的时间线见 JSON（timeline 字段）\n",
+				len(hosts)-1)
+		}
+	}
+
 	// ── 同源资产（IP 反查）──
 	if len(rep.ReverseIP) > 0 {
 		fmt.Fprintln(w)
