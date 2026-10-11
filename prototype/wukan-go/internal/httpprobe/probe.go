@@ -45,10 +45,14 @@ type ProbeResult struct {
 
 	// ⭐ 以下是**相互独立**的指纹来源，冲突检测的输入
 	// --- 来源 1：HTTP 响应头 ---
-	Server       string            `json:"server,omitempty"`
-	PoweredBy    string            `json:"powered_by,omitempty"`
-	Via          string            `json:"via,omitempty"`
-	Location     string            `json:"location,omitempty"`
+	Server    string `json:"server,omitempty"`
+	PoweredBy string `json:"powered_by,omitempty"`
+	Via       string `json:"via,omitempty"`
+	Location  string `json:"location,omitempty"`
+	// AltSvc Alt-Svc 响应头：声明可用的替代服务（如 h3=":443"）
+	//
+	// ⭐ 与 QUIC 探活交叉验证：声明了 h3 但 UDP/443 无响应 = 配置漂移线索
+	AltSvc       string            `json:"alt_svc,omitempty"`
 	SetCookies   []string          `json:"set_cookies,omitempty"`
 	CFHeaders    map[string]string `json:"cf_headers,omitempty"`  // Cloudflare 特征
 	CDNHeaders   map[string]string `json:"cdn_headers,omitempty"` // 其他 CDN 特征
@@ -376,6 +380,9 @@ func (p *Prober) probeOnce(rawURL string, cl *http.Client) *ProbeResult {
 			r.Via = val
 		case "location":
 			r.Location = val
+		case "alt-svc":
+			// ⭐ 替代服务声明（h3/quic 等），供与 QUIC 探活结果交叉验证
+			r.AltSvc = val
 		case "set-cookie":
 			r.SetCookies = append(r.SetCookies, v...)
 		case "cf-ray", "cf-cache-status", "cf-cache-id":

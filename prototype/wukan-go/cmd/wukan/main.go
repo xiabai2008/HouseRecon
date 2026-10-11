@@ -556,6 +556,7 @@ var flagsWithValue = []string{
 	// ports / recon --ports
 	"-p", "--ports",
 	"--ports-rate",
+	"--ports-sub-max",
 	"-c", "--concurrency",
 	"-r", "--rate",
 	"--timeout",
@@ -747,6 +748,8 @@ type reconFlags struct {
 	noPortsCache    bool
 	portsCacheStats bool
 	portsCacheClear bool
+	// ⭐ 存活子域批量端口扫描（-1 = 未指定，用默认值）
+	portsSubMax int
 	// ⭐ HTTP 指纹采集（主动探测）
 	doTech         bool
 	techNoFav      bool
@@ -808,6 +811,10 @@ func runRecon(args []string) {
 			opt.PortsRate = f.portsRate
 		}
 		opt.PortsGrabBanner = !f.portsNoBan
+		// ⭐ 存活子域批量扫描（-1 = 未指定，保留 DefaultOptions 的默认值 10）
+		if f.portsSubMax >= 0 {
+			opt.PortsSubMax = f.portsSubMax
+		}
 	}
 	// ⭐ HTTP 指纹采集是**主动探测**（发 HTTP 请求 + favicon），默认不开启
 	opt.TechProbe = f.doTech
@@ -1148,6 +1155,8 @@ func parseReconFlags(args []string) *reconFlags {
 		format:  "table",
 		dns:     "alidns",
 		maxSubs: 30,
+		// ⭐ -1 = 未指定（用 recon 默认值；0 是合法值，表示关闭子域扫描）
+		portsSubMax: -1,
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -1203,6 +1212,8 @@ func parseReconFlags(args []string) *reconFlags {
 			f.portsRate = intArg(nextArg(args, &i, a), 100)
 		case "--no-banner":
 			f.portsNoBan = true
+		case "--ports-sub-max":
+			f.portsSubMax = intArg(nextArg(args, &i, a), 10)
 		case "--no-ports-cache":
 			f.noPortsCache = true
 		case "--ports-cache-stats":
@@ -1289,6 +1300,7 @@ func printReconUsage() {
       --tech-cache-clear  清空 tech 缓存后退出
       --tech-no-favicon 指纹采集不抓 favicon（更快）
       --ports-rate <n>  端口扫描限速（默认 100/s）
+      --ports-sub-max <n> 最多对多少个存活子域批量扫端口（默认 10，0=关闭）
       --no-banner       端口扫描不抓 banner（更快）
       --no-ports-cache  不用端口扫描缓存（强制重新扫描）
       --ports-cache-stats 查看端口扫描缓存统计后退出

@@ -3,6 +3,7 @@ package recon
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -111,6 +112,12 @@ type Options struct {
 	// ⭐ 与 TechCache 同属"性能优化"，不影响采集逻辑本身。
 	//   缓存键由 portscan.MakeCacheKey 生成（含实际发送的 Host 头）。
 	PortsCache portscan.PortCache
+	// PortsSubMax 最多对多少个存活子域做端口扫描（0 = 关闭）
+	//
+	// ⭐ 量级控制：每个子域都会对它的解析 IP 扫一遍端口，
+	//   10 个子域 × top100 = 1000 次连接 —— 默认 10 是"覆盖攻击面"
+	//   与"低交互"的折中（对齐 --tech-sub-max 的设计）。
+	PortsSubMax int
 
 	// ⭐ HTTP 指纹采集（主动探测，默认关）
 	TechProbe bool
@@ -175,6 +182,8 @@ func DefaultOptions() Options {
 		PortsGrabBanner: true,
 		// ⭐ 端口缓存默认 nil（由 CLI 注入；换机后缓存为空是正常的）
 		PortsCache: nil,
+		// ⭐ 存活子域批量端口扫描（P1-2）：默认最多 10 个子域
+		PortsSubMax: 10,
 		// ⭐ HTTP 指纹（主动，默认关）
 		TechProbe:       false,
 		TechTimeout:     8 * time.Second,
@@ -356,32 +365,64 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 	// ⭐ 与 QUIC 的区别：QUIC 只发 1200 字节的探测包拿一个判定，
 	//   端口扫描会真正建立 TCP 连接并抓 banner —— 对目标的影响更大，
 	//   所以端口必须显式指定（不可全端口），且限速更保守（默认 100/s）。
+	//
+	// ⭐ P1-2：除根域 IP 外，还对**存活子域**的 IP 扫描（限量 PortsSubMax）——
+	//   子域往往跑着与根域不同的服务，只扫根域会漏掉大部分暴露面。
 	if r.opt.PortsScan && rep.DNS != nil && len(rep.DNS.IPs) > 0 {
 		t := time.Now()
 		rep.PortsSpec = r.opt.PortsSpec
+		if r.opt.PortsSubMax > 0 {
+			// ⭐ 把"是否含子域扫描"编进 spec 字符串：
+			//   快照覆盖率据此判断两次运行的扫描集合是否可比（P1-1）
+			rep.PortsSpec += fmt.Sprintf("+sub%d", r.opt.PortsSubMax)
+		}
 		spec, err := portscan.ParsePorts(r.opt.PortsSpec)
 		if err != nil {
 			rep.Ports = nil
 			rep.PortsErr = err.Error()
 		} else {
 			ports := spec.Expand()
-			pcfg := portscan.DefaultConfig()
-			pcfg.Ports = ports
-			pcfg.Timeout = r.opt.PortsTimeout
-			pcfg.RateLimit = r.opt.PortsRate
-			pcfg.GrabBanner = r.opt.PortsGrabBanner
-			pcfg.Concurrency = 32
+			base := portscan.DefaultConfig()
+			base.Ports = ports
+			base.Timeout = r.opt.PortsTimeout
+			base.RateLimit = r.opt.PortsRate
+			base.GrabBanner = r.opt.PortsGrabBanner
+			base.Concurrency = 32
 			// ⭐ 端口结果缓存（nil = 不缓存；命中时不会发起连接）
-			pcfg.Cache = r.opt.PortsCache
-			for _, ip := range rep.DNS.IPs {
-				pcfg.Hosts = append(pcfg.Hosts, ip)
-			}
+			base.Cache = r.opt.PortsCache
+
+			// ① 根域：每个解析 IP
+			rootCfg := base
+			rootCfg.Hosts = append(rootCfg.Hosts, rep.DNS.IPs...)
 			// ⭐ Host 用域名而不是 IP：让 banner 里的 Server 头能带上正确 Host，
 			// 某些 CDN/WAF 会根据 Host 头返回不同内容。
 			// 同时 IP 仍记在 result.IP 字段。
-			pcfg.HostHeader = rep.Target
-			sc := portscan.New(pcfg)
-			rep.Ports = sc.ScanAll(nil)
+			rootCfg.HostHeader = rep.Target
+			rep.Ports = portscan.New(rootCfg).ScanAll(nil)
+
+			// ② ⭐ 存活子域批量扫描（限量）
+			scanned := map[string]bool{}
+			for _, ip := range rep.DNS.IPs {
+				scanned[ip] = true
+			}
+			subTargets := selectSubScanTargets(rep, scanned, r.opt.PortsSubMax)
+			if len(subTargets) > 0 {
+				tSub := time.Now()
+				for _, st := range subTargets {
+					subCfg := base
+					subCfg.Hosts = st.IPs
+					// ⭐ 子域用自己的域名作 Host（vhost 才能返回正确内容）
+					subCfg.HostHeader = st.Name
+					rs := portscan.New(subCfg).ScanAll(nil)
+					// ⭐ Host 标记为子域名（报告可读；techTargets 的根域
+					//   节点选择据此过滤，避免把子域 IP 当根域 CDN 节点）
+					for i := range rs {
+						rs[i].Host = st.Name
+					}
+					rep.Ports = append(rep.Ports, rs...)
+				}
+				rep.Timing["ports_subdomains"] = time.Since(tSub).String()
+			}
 			rep.Timing["ports"] = time.Since(t).String()
 		}
 	}
@@ -1122,6 +1163,64 @@ func Analyze(rep *Report) []Finding {
 		}
 	}
 
+	// ── Alt-Svc 声明 × QUIC 实际（P2-4：配置漂移检测）──
+	//
+	// ⭐ 两个独立来源的交叉验证：
+	//   - Alt-Svc 头：服务**声明**自己支持 HTTP/3
+	//   - QUIC 探活：UDP/443 的**实际**响应
+	//   声明与事实不符 = 配置漂移的可靠线索（创新评估"想法 5"）。
+	//
+	// ⚠️ 判读必须严谨：本地 UDP 探测无响应也可能是**路径阻断**
+	//   （运营商/防火墙丢 UDP），不能直接断言"服务不可用"—— 文案如实说明。
+	if len(rep.QUIC) > 0 && len(rep.Tech) > 0 {
+		quicAlive := map[string]bool{}
+		quicHint := map[string]string{}
+		for _, q := range rep.QUIC {
+			quicAlive[q.Host] = q.IsQUIC()
+			quicHint[q.Host] = q.StackHint
+		}
+		var falseDecl []string   // 声明 h3 但探测无响应
+		var missingDecl []string // 实际支持但未声明
+		for _, t := range rep.Tech {
+			if t == nil || t.IP == "" {
+				continue
+			}
+			alive, probed := quicAlive[t.IP]
+			if !probed {
+				continue
+			}
+			declares := strings.Contains(strings.ToLower(t.AltSvc), "h3")
+			switch {
+			case declares && !alive:
+				falseDecl = append(falseDecl, fmt.Sprintf("%s Alt-Svc=%s",
+					t.IP, truncateS(t.AltSvc, 60)))
+			case !declares && alive:
+				ev := t.IP
+				if h := quicHint[t.IP]; h != "" {
+					ev += " (" + h + ")"
+				}
+				missingDecl = append(missingDecl, ev)
+			}
+		}
+		if len(falseDecl) > 0 {
+			add("medium", "altsvc_unreachable",
+				fmt.Sprintf("%d 个 IP 声明 HTTP/3 但 UDP/443 探测无响应", len(falseDecl)),
+				"这些 IP 通过 Alt-Svc 头向客户端**声明**支持 HTTP/3，但 QUIC 探活没有得到响应。\n"+
+					"可能原因：\n"+
+					"  ① 服务已停用 h3 但声明未清理（配置漂移）\n"+
+					"  ② 本地网络到目标的 UDP 被阻断（路径防火墙）\n"+
+					"建议：从另一个网络位置复核；若同样无响应，清理 Alt-Svc 声明。",
+				falseDecl...)
+		}
+		if len(missingDecl) > 0 {
+			add("info", "altsvc_missing",
+				fmt.Sprintf("%d 个 IP 实际支持 HTTP/3 但未声明 Alt-Svc", len(missingDecl)),
+				"浏览器依赖 Alt-Svc 声明发现 HTTP/3，未声明时客户端不会自动尝试 h3。\n"+
+					"若有意启用 h3，建议补上 Alt-Svc 头；若有意禁用，可忽略本条。",
+				missingDecl...)
+		}
+	}
+
 	// ── IP 归属相关 ──
 	// ⭐ 同一个 IP 可能同时有 cloud 与 hosting 标签（两标签由不同依据产生），
 	//   所以收集证据时必须去重，否则同一个 IP 会在报告里出现两次
@@ -1275,12 +1374,17 @@ func Analyze(rep *Report) []Finding {
 			var admin []string
 			for _, p := range open {
 				tag := portRisk(p.Port, p.Service, p.Banner)
+				// ⭐ 子域扫描的结果标注来源主机（根域扫描 Host==IP，不重复显示）
+				label := ""
+				if p.Host != "" && p.Host != p.IP {
+					label = p.Host + " "
+				}
 				switch tag {
 				case "risk":
-					risky = append(risky, fmt.Sprintf("%d/tcp %s %s", p.Port,
+					risky = append(risky, fmt.Sprintf("%s%d/tcp %s %s", label, p.Port,
 						dashOr(p.Service), p.Banner))
 				case "admin":
-					admin = append(admin, fmt.Sprintf("%d/tcp %s", p.Port, dashOr(p.Service)))
+					admin = append(admin, fmt.Sprintf("%s%d/tcp %s", label, p.Port, dashOr(p.Service)))
 				}
 			}
 			if len(risky) > 0 {
@@ -1552,6 +1656,57 @@ func truncateS(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// subScanTarget 一个待扫描的存活子域（P1-2）
+type subScanTarget struct {
+	Name string
+	IPs  []string
+}
+
+// selectSubScanTargets 选出要批量扫描端口的存活子域
+//
+// 规则（⭐ 量级控制是关键）：
+//   - 只选解析成功的子域（Resolves && ResolveIPs 非空），跳过泛域名与根域
+//   - 跳过"IP 全部已被扫描"的子域（同一 IP 不重复扫；banner 差异由 tech 阶段覆盖）
+//   - 按名字排序 + 限量（选择稳定，便于多次运行 diff）
+//   - 会修改传入的 scanned 集合（把本次选中的 IP 标记为已扫，防跨子域重复）
+func selectSubScanTargets(rep *Report, scanned map[string]bool, max int) []subScanTarget {
+	if rep == nil || rep.CT == nil || max <= 0 || scanned == nil {
+		return nil
+	}
+	var subs []*SubdomainInfo
+	for _, sb := range rep.CT.Subdomains {
+		if sb == nil || sb.IsWildcard || !sb.Resolves || len(sb.ResolveIPs) == 0 {
+			continue
+		}
+		if strings.EqualFold(sb.Name, rep.Target) {
+			continue
+		}
+		subs = append(subs, sb)
+	}
+	sort.Slice(subs, func(i, j int) bool { return subs[i].Name < subs[j].Name })
+
+	var out []subScanTarget
+	for _, sb := range subs {
+		if len(out) >= max {
+			break
+		}
+		var ips []string
+		for _, ip := range sb.ResolveIPs {
+			ip = strings.TrimSpace(ip)
+			if ip == "" || scanned[ip] {
+				continue
+			}
+			scanned[ip] = true
+			ips = append(ips, ip)
+		}
+		if len(ips) == 0 {
+			continue
+		}
+		out = append(out, subScanTarget{Name: sb.Name, IPs: ips})
+	}
+	return out
+}
+
 // techTarget 一条 tech 探测目标
 type techTarget struct {
 	// URL 实际请求的 URL（可能是 IP:端口，也可能是域名）
@@ -1598,6 +1753,12 @@ func (r *Runner) techTargets(rep *Report) []techTarget {
 		perIP := map[string]int{}
 		for _, p := range rep.Ports {
 			if !p.Open() || !webPorts[p.Port] {
+				continue
+			}
+			// ⭐ 只取根域直连扫描的结果（Host=IP 字面量）。
+			//   子域批量扫描（P1-2）的结果 Host=子域名，由 ② 的子域探测
+			//   覆盖 —— 若混入这里，会用根域 Host 头探子域 IP，得到错误站点。
+			if net.ParseIP(p.Host) == nil {
 				continue
 			}
 			if cur, ok := perIP[p.IP]; !ok || p.Port < cur {
