@@ -309,9 +309,40 @@ func isNoRecord(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "no answer") ||
+	// ⭐ 修复（E2E 发现）：doh.go 返回的是中文"无记录"，
+	//   只匹配英文模式会把正常域名（缺某记录类型）的 Err 弄脏 ——
+	//   报告显示"⚠ CNAME: 无记录"噪音，覆盖率判定也被误伤
+	return strings.Contains(s, "无记录") ||
+		strings.Contains(s, "no answer") ||
 		strings.Contains(s, "no such record") ||
 		strings.Contains(s, "no records")
+}
+
+// dnsHardFailed DNS 错误串是否包含**硬失败**（NXDOMAIN / 超时 / 网络错误）。
+//
+// ⭐ 用于快照覆盖率判定：Err 里可能混着良性段（"CNAME: 无记录"、
+//
+//	"系统解析器不支持 XX"），这些不影响"IP 列表是否可信"。
+//	未知段一律按硬失败处理（保守方向：宁可不判差异，不产生假阳性）。
+func dnsHardFailed(errStr string) bool {
+	if strings.TrimSpace(errStr) == "" {
+		return false
+	}
+	for _, seg := range strings.Split(errStr, ";") {
+		seg = strings.ToLower(strings.TrimSpace(seg))
+		if seg == "" {
+			continue
+		}
+		if strings.Contains(seg, "无记录") ||
+			strings.Contains(seg, "no answer") ||
+			strings.Contains(seg, "no such record") ||
+			strings.Contains(seg, "no records") ||
+			strings.Contains(seg, "不支持") {
+			continue // 良性段
+		}
+		return true
+	}
+	return false
 }
 
 func dedupeStrings(in []string) []string {

@@ -129,6 +129,23 @@ func TestBuildSnapshot_Coverage(t *testing.T) {
 	if BuildSnapshot(rep2).Coverage.Passive {
 		t.Error("被动 DNS 无实际记录时覆盖率应为 false")
 	}
+
+	// ⭐ E2E 发现的回归：良性"无记录"错误不得把 DNS 覆盖率弄脏
+	rep3 := &Report{
+		Target: "example.com",
+		DNS:    &DNSResult{IPs: []string{"1.2.3.4"}, Err: "CNAME: 无记录"},
+	}
+	if !BuildSnapshot(rep3).Coverage.DNS {
+		t.Error("⭐ 良性'无记录'错误不应影响 DNS 覆盖率")
+	}
+	// 硬失败（NXDOMAIN / 超时）→ 覆盖率 false
+	rep4 := &Report{
+		Target: "example.com",
+		DNS:    &DNSResult{Err: "NXDOMAIN"},
+	}
+	if BuildSnapshot(rep4).Coverage.DNS {
+		t.Error("NXDOMAIN 时 DNS 覆盖率应为 false")
+	}
 }
 
 // ⭐ H2：JARM 全零哨兵在快照中归一化为空（"未采集"语义，不进 diff）

@@ -121,7 +121,9 @@ func BuildSnapshot(rep *Report) *Snapshot {
 	}
 
 	// ── 覆盖率（决定哪些类别可参与 diff）──
-	if rep.DNS != nil && rep.DNS.Err == "" {
+	// ⭐ DNS 覆盖 = 解析没有硬失败（Err 里可能混着"无记录"这类良性段，
+	//   不能用 Err=="" 一刀切 —— E2E 实测发现正常域名全被误判为"未覆盖"）
+	if rep.DNS != nil && !dnsHardFailed(rep.DNS.Err) {
 		snap.Coverage.DNS = true
 	}
 	if rep.CT != nil && len(rep.CT.SourcesUsed) > 0 {
