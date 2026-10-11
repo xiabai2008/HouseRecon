@@ -98,6 +98,7 @@ wukan tech -f urls.txt --csv -o out.csv
 | `WUKAN_FORCE_BANNER=1` | 强制输出启动页 |
 | `NO_COLOR=1` / `WUKAN_NO_COLOR=1` | 关闭 ANSI 颜色（遵循 [no-color.org](https://no-color.org/) 约定） |
 | `WUKAN_FORCE_COLOR=1` | 强制彩色 |
+| `WUKAN_HACKERTARGET_KEY` | hackertarget API key（可选）：免费层仅 50 次/天，配置后按套餐提升额度 |
 
 启动页与颜色**默认只在终端（TTY）下启用**：输出被重定向或接入管道时自动降级为纯文本，
 保证 `wukan help > doc.txt` 和 `wukan version | awk ...` 拿到的是干净、可解析的输出。
@@ -150,6 +151,8 @@ wukan tech -f urls.txt --csv -o out.csv
 - CDN 判定必须来自**独立于 Server 头**的信号（否则 `Server: Tengine` 会既当"声称"又当"反证"）
 - IP 直连时**不报**证书 SAN 不匹配（这是访问形式的必然结果，不是配置错误）
 
+**探测失败自动降级重试**：先跳过重定向（拿原始 301/302 —— Server/Location/Cookie 本身就是有效指纹），再改试 `http://`（覆盖只跑 HTTP 的子域）。实测把"重定向后超时"的失败子域变成可分析的结果；结果在表格/JSON 中如实标注 `retried_with`。
+
 ### 3. 端口扫描：用 TCP connect 规避 SYN Proxy 误报
 
 AWS Global Accelerator 等服务的边缘使用无状态 SYN Proxy —— **无论端口背后有无真实服务，都会对任何 SYN 回 SYN-ACK**。
@@ -170,10 +173,11 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 | 全流程（gitee.com，缓存命中） | 3.8s |
 | `tech` 阶段（15 个目标） | 10.8s（冷）→ 0s（缓存命中），**整体快 6 倍** |
 | 端口缓存（本地靶场 8 端口） | 冷扫 0.63s → 二次 8/8 全命中 **0.00s**（零连接） |
+| tech 降级重试（本地靶场） | 重定向黑洞 → 跳过重定向拿到 **302**；TLS 失败 → http 回退拿到 **200**（对照组均失败） |
 | 子域批量指纹的增量价值 | 根域探测发现 **0** 处冲突，子域探测发现 **5** 处 |
 | rDNS | 6 个 IP 中 2 个**无 PTR**（无 PTR 是常态，非异常） |
 | favicon 哈希表 | 23 条，**全部实测**（含 md5 可核对） |
-| 单元测试 | 58 项全过 |
+| 单元测试 | 72 项全过 |
 
 ### 数据源实测结论
 
@@ -183,7 +187,7 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 | `rdap.org` | ✅ | 注册商 / 过期时间 / NS / DNSSEC |
 | `api.certspotter.com` | ✅ 3.1s | ⚠️ **免费层 100 次/小时** |
 | `crt.sh` | 🟡 间歇 502 | 作备源，自动降级 |
-| `api.hackertarget.com` | ✅ | ⚠️ **免费层 50 次/天**（被动 DNS / IP 反查） |
+| `api.hackertarget.com` | ✅ | ⚠️ **免费层 50 次/天**（被动 DNS / IP 反查）；可配 `WUKAN_HACKERTARGET_KEY` 提升额度 |
 | `ipwho.is` + `ip-api.com` | ✅ | IP 归属，双源互补 |
 
 **降级链路**：缓存 → certspotter → crt.sh。全部失败时**不崩溃、不静默**，明确报告原因。
@@ -248,7 +252,7 @@ filtered/error 是**不确定结论**（超时无法区分"被丢掉的开放端
 诚实列出，避免误用：
 
 1. **CT 源配额紧**（certspotter 100 次/小时），大量目标需分批或自备 key
-2. **被动 DNS 配额 50 次/天**（hackertarget 免费层）
+2. **被动 DNS 配额 50 次/天**（hackertarget 免费层）—— 可配 `WUKAN_HACKERTARGET_KEY` 提升额度
 3. **子域"存活"仅验证 DNS 解析** —— 有泛域名时几乎全部"存活"，需 HTTP 探测确认
 4. **端口扫描超时无法区分** "被 DROP 的开放端口"与"不存在的端口"（TCP connect 的固有代价）
 5. **不查被动 DNS 历史解析的完整时间线**（只取当前快照）

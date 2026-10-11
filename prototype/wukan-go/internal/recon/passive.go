@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,19 +105,28 @@ type ReverseIPResult struct {
 
 // ── hackertarget 客户端 ───────────────────────────────────
 
-// HackerTargetClient 访问 hackertarget.com 的免费 API
+// EnvHackerTargetKey 环境变量名：hackertarget API key（可选）
+//
+// ⭐ 免费层仅 50 次/天，批量场景根本不够用；配置 key 后按套餐提升额度。
+//
+//	官方 API 通过 URL 参数 `apikey` 识别套餐（hackertarget.com/api/）。
+const EnvHackerTargetKey = "WUKAN_HACKERTARGET_KEY"
+
+// HackerTargetClient 访问 hackertarget.com 的 API
 //
 // ⭐ 选它的原因（实测 2026-10-04）：
-//   - **无需 API key**（SecurityTrails 等都要 key）
+//   - **免费层无需 API key**（SecurityTrails 等都要 key）
 //   - 返回纯 CSV/文本，解析简单
 //   - hostsearch（子域→IP）1.3s / dnslookup 1.4s / reverseiplookup 1.3s
 //   - 一次 hostsearch 返回 1000 条子域，够用
 type HackerTargetClient struct {
 	client  *http.Client
 	baseURL string
+	// apiKey 可选 API key（来自环境变量 WUKAN_HACKERTARGET_KEY）
+	apiKey string
 }
 
-// NewHackerTarget 创建客户端
+// NewHackerTarget 创建客户端（自动读取 WUKAN_HACKERTARGET_KEY）
 func NewHackerTarget(timeout time.Duration) *HackerTargetClient {
 	if timeout <= 0 {
 		timeout = 25 * time.Second
@@ -124,7 +134,40 @@ func NewHackerTarget(timeout time.Duration) *HackerTargetClient {
 	return &HackerTargetClient{
 		client:  &http.Client{Timeout: timeout},
 		baseURL: "https://api.hackertarget.com",
+		// ⭐ 裁掉空白：用户从别处复制 key 常带空格/换行
+		apiKey: strings.TrimSpace(os.Getenv(EnvHackerTargetKey)),
 	}
+}
+
+// HasKey 是否配置了 API key
+func (c *HackerTargetClient) HasKey() bool { return c.apiKey != "" }
+
+// apiURL 构造 API 请求地址（q 转义；配置了 key 时附加 apikey 参数）
+func (c *HackerTargetClient) apiURL(endpoint, q string) string {
+	u := fmt.Sprintf("%s/%s/?q=%s", c.baseURL, endpoint, url.QueryEscape(q))
+	if c.apiKey != "" {
+		u += "&apikey=" + url.QueryEscape(c.apiKey)
+	}
+	return u
+}
+
+// quotaExceeded 判定响应体是否为配额耗尽
+func quotaExceeded(text string) bool {
+	low := strings.ToLower(text)
+	return strings.Contains(low, "api count exceeded") ||
+		strings.Contains(low, "too many requests")
+}
+
+// quotaHint 生成配额相关的处置提示
+//
+// ⭐ 有 key 和没 key 的处置完全不同：没 key 是"告诉你怎么提升"，
+//
+//	有 key 是"检查你的 key/套餐"——只说一句"限流了"等于没说。
+func (c *HackerTargetClient) quotaHint() string {
+	if c.apiKey != "" {
+		return "已配置 key 仍被限流 —— 检查 key 是否有效、套餐额度是否用尽"
+	}
+	return "免费层 50 次/天，设置环境变量 " + EnvHackerTargetKey + " 可提升额度"
 }
 
 // hackertarget 的免费额度是每 50 请求/天，很紧
@@ -137,17 +180,20 @@ func NewHackerTarget(timeout time.Duration) *HackerTargetClient {
 //	github.com,140.82.113.4
 //	accelerator.github.com,185.199.110.153
 func (c *HackerTargetClient) HostSearch(ctx context.Context, domain string) (map[string][]string, error) {
-	url := fmt.Sprintf("%s/hostsearch/?q=%s", c.baseURL, domain)
-	body, err := c.get(ctx, url)
+	body, err := c.get(ctx, c.apiURL("hostsearch", domain))
 	if err != nil {
 		return nil, err
 	}
 	text := string(body)
 	// 错误是返回在响应体里的，不是 HTTP 状态码
-	if strings.Contains(text, "error") || strings.Contains(text, "API count exceeded") {
+	if strings.Contains(text, "error") || quotaExceeded(text) {
 		msg := strings.TrimSpace(text)
 		if len(msg) > 120 {
 			msg = msg[:120]
+		}
+		if quotaExceeded(text) {
+			return nil, fmt.Errorf("hackertarget 限流: %s（%s）",
+				firstLine(msg), c.quotaHint())
 		}
 		return nil, fmt.Errorf("hackertarget: %s", msg)
 	}
@@ -184,12 +230,17 @@ func (c *HackerTargetClient) HostSearch(ctx context.Context, domain string) (map
 
 // DNSLookup 根域的记录类型查询（第二个数据源，用于交叉验证）
 func (c *HackerTargetClient) DNSLookup(ctx context.Context, domain string) (map[string][]string, error) {
-	url := fmt.Sprintf("%s/dnslookup/?q=%s", c.baseURL, domain)
-	body, err := c.get(ctx, url)
+	body, err := c.get(ctx, c.apiURL("dnslookup", domain))
 	if err != nil {
 		return nil, err
 	}
 	text := string(body)
+	// ⭐ 配额耗尽必须显式报错 —— 此前只查 "error" 字样，配额消息不含
+	//   "error"，会静默返回空结果（表现为"该域没有记录"）
+	if quotaExceeded(text) {
+		return nil, fmt.Errorf("hackertarget 限流: %s（%s）",
+			firstLine(text), c.quotaHint())
+	}
 	if strings.Contains(text, "error") {
 		return nil, fmt.Errorf("hackertarget: %s", strings.TrimSpace(firstLine(text)))
 	}
@@ -221,12 +272,16 @@ func (c *HackerTargetClient) DNSLookup(ctx context.Context, domain string) (map[
 //
 // 这能发现"你不知道的、跑在同一台服务器上的其他域"。
 func (c *HackerTargetClient) ReverseIPLookup(ctx context.Context, ip string) ([]string, error) {
-	url := fmt.Sprintf("%s/reverseiplookup/?q=%s", c.baseURL, ip)
-	body, err := c.get(ctx, url)
+	body, err := c.get(ctx, c.apiURL("reverseiplookup", ip))
 	if err != nil {
 		return nil, err
 	}
 	text := string(body)
+	// ⭐ 与 DNSLookup 同理：配额耗尽必须显式报错，不能静默返回空
+	if quotaExceeded(text) {
+		return nil, fmt.Errorf("hackertarget 限流: %s（%s）",
+			firstLine(text), c.quotaHint())
+	}
 	if strings.Contains(text, "error") {
 		return nil, fmt.Errorf("hackertarget: %s", strings.TrimSpace(firstLine(text)))
 	}
@@ -262,7 +317,7 @@ func (c *HackerTargetClient) get(ctx context.Context, url string) ([]byte, error
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("限流（免费层 50 次/天）")
+		return nil, fmt.Errorf("hackertarget 限流（HTTP 429）: %s", c.quotaHint())
 	}
 	if resp.StatusCode == http.StatusOK {
 		return io.ReadAll(io.LimitReader(resp.Body, 8<<20))

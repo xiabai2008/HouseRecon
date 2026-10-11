@@ -455,6 +455,16 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 		if subCount > 0 {
 			fmt.Fprintf(w, "  ⭐ 含 %d 个子域\n", subCount)
 		}
+		// ⭐ 降级重试透明化
+		retried := 0
+		for _, t := range rep.Tech {
+			if t != nil && t.RetriedWith != "" {
+				retried++
+			}
+		}
+		if retried > 0 {
+			fmt.Fprintf(w, "  ↻ %d 个目标经降级重试成功（跳过重定向 / http 回退）\n", retried)
+		}
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "  URL\t状态\tServer\tTLS\t技术栈\t冲突")
 		for i, t := range rep.Tech {
@@ -472,8 +482,13 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 					conflictMark = fmt.Sprintf("⚠ %d", n)
 				}
 			}
+			// ⭐ 降级重试必须如实标注（https 显示但数据来自 http 回退）
+			u := truncateStr(t.URL, 34)
+			if l := t.RetryLabel(); l != "" {
+				u += "（" + l + "）"
+			}
 			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
-				truncateStr(t.URL, 34), status,
+				u, status,
 				dashIfEmptyStr(t.Server), dashIfEmptyStr(t.TLSVersion),
 				dashIfEmptyStr(strings.Join(t.BodyKeywords, "/")), conflictMark)
 		}

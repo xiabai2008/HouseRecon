@@ -34,6 +34,14 @@ type ProbeResult struct {
 	Cached bool `json:"cached,omitempty"`
 	// CacheAge 缓存结果的年龄
 	CacheAge string `json:"cache_age,omitempty"`
+	// RetriedWith 结果来自降级重试时的重试方式（空 = 首次即成功）
+	//
+	//	"no-follow" 跳过重定向后成功
+	//	"http"      https 失败后改试 http 成功
+	//
+	// ⭐ 必须如实标注：报告里 URL 显示的是 https，但数据可能实际来自
+	//   http 回退 —— 不标注会让人误以为 HTTPS 正常工作。
+	RetriedWith string `json:"retried_with,omitempty"`
 
 	// ⭐ 以下是**相互独立**的指纹来源，冲突检测的输入
 	// --- 来源 1：HTTP 响应头 ---
@@ -108,6 +116,17 @@ type Config struct {
 	Insecure bool
 	// FollowRedirect 跟随重定向
 	FollowRedirect bool
+	// RetryFallback 探测失败时是否降级重试（见 retryFallback）
+	//
+	// ⭐ 实测动机（2026-10-05）：4 个子域是「重定向到 github.com 后超时」，
+	//   单次探测只能拿到错误（只能靠负缓存避免重复代价，但结论仍是缺失的）。
+	//   降级链（每步只在失败时发生，最多 2 次额外请求）：
+	//     ① 跳过重定向重试 —— 重定向链超时时，原始响应（301/302）本身
+	//        就有完整指纹价值（Server / Location / Cookie）
+	//     ② https 失败改试 http —— 子域可能只跑 HTTP（443 关闭或被过滤）
+	//   代价：失败目标最多多花 2 个请求；全部失败后走负缓存（10 分钟），
+	//   重复运行不会反复付这个代价。
+	RetryFallback bool
 	// MaxBodySize 正文最大读取字节（避免大页面）
 	MaxBodySize int
 	// GrabTLS 抓 TLS 细节
@@ -136,10 +155,12 @@ func DefaultConfig() Config {
 		Concurrency:    16,
 		Insecure:       true,
 		FollowRedirect: true,
-		MaxBodySize:    512 * 1024,
-		GrabTLS:        true,
-		GrabFavicon:    true,
-		GrabCert:       true,
+		// ⭐ 失败时降级重试（跳过重定向 / http 回退）
+		RetryFallback: true,
+		MaxBodySize:   512 * 1024,
+		GrabTLS:       true,
+		GrabFavicon:   true,
+		GrabCert:      true,
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 			"(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
 	}
@@ -149,6 +170,16 @@ func DefaultConfig() Config {
 type Prober struct {
 	cfg    Config
 	client *http.Client
+	// clientNoFollow 跳过重定向的备用客户端（仅 RetryFallback 开启时创建）
+	//
+	// ⭐ 与主客户端**共享 transport** —— 否则两个连接池会让连接复用失效、
+	//   白白多付 TLS 握手成本。
+	clientNoFollow *http.Client
+}
+
+// noFollowRedirect 不跟随重定向（返回第一跳响应）
+func noFollowRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // New 创建探针
@@ -158,31 +189,27 @@ func New(cfg Config) *Prober {
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.Insecure},
-		// ⭐ 禁用连接复用会导致 banner 抓不到，但复用会让指纹不可靠
-		//   （拿到的可能是上次连接的 TLS 状态）。这里保持默认复用，
-		//   TLS 细节靠独立的 TLSConn 单独抓。
+		// ⭐ 保持默认连接复用：禁用复用会导致 banner 抓不到；
+		//   而"复用导致指纹不可靠"（拿到上次连接的 TLS 状态）的问题
+		//   靠独立的 TLS 抓取路径解决，不靠禁用复用。
 		MaxIdleConns:        100,
 		IdleConnTimeout:     10 * time.Second,
 		TLSHandshakeTimeout: cfg.Timeout,
-		DisableKeepAlives:   false,
 	}
-	_ = tr
 
-	cl := &http.Client{
-		Timeout: cfg.Timeout,
-		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: cfg.Insecure},
-			MaxIdleConns:        100,
-			IdleConnTimeout:     10 * time.Second,
-			TLSHandshakeTimeout: cfg.Timeout,
-		},
-	}
+	cl := &http.Client{Timeout: cfg.Timeout, Transport: tr}
+	var clNoFollow *http.Client
 	if !cfg.FollowRedirect {
-		cl.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+		// 主客户端本来就不跟随重定向 → 无需备用客户端
+		cl.CheckRedirect = noFollowRedirect
+	} else if cfg.RetryFallback {
+		clNoFollow = &http.Client{
+			Timeout:       cfg.Timeout,
+			Transport:     tr,
+			CheckRedirect: noFollowRedirect,
 		}
 	}
-	return &Prober{cfg: cfg, client: cl}
+	return &Prober{cfg: cfg, client: cl, clientNoFollow: clNoFollow}
 }
 
 // ProbeURL 探测单个 URL
@@ -191,16 +218,15 @@ func New(cfg Config) *Prober {
 //
 //	缓存键含 HostHeader —— 同一个 IP:80 上不同 Host 头是不同的站点，
 //	用 URL 做键会导致结果串味。
+//
+// ⭐ 探测失败时的降级重试见 retryFallback（由 Config.RetryFallback 控制）。
 func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
-	r := &ProbeResult{URL: rawURL, CFHeaders: map[string]string{},
-		CDNHeaders: map[string]string{}, SecurityHdrs: map[string]string{}}
-
-	u, err := parseURL(rawURL)
-	if err != nil {
+	// 解析失败：不重试、不写负缓存（负缓存只针对真实网络失败）
+	if _, err := parseURL(rawURL); err != nil {
+		r := newProbeResult(rawURL)
 		r.Err = err.Error()
 		return r
 	}
-	r.Port = u.port()
 
 	// ⭐ 缓存查询
 	var cacheKey string
@@ -213,6 +239,78 @@ func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 			return cached
 		}
 	}
+
+	r := p.probeOnce(rawURL, p.client)
+	if r.Err != "" && p.cfg.RetryFallback {
+		r = p.retryFallback(rawURL, r)
+	}
+
+	// ⭐ 写缓存（失败结果由 Cache.Put 内部过滤）
+	if p.cfg.Cache != nil {
+		p.cfg.Cache.Put(cacheKey, r)
+	}
+	return r
+}
+
+// retryFallback 探测失败后的降级重试（最多 2 次额外请求）
+//
+// ⭐ 顺序有讲究（为什么不是反过来）：
+//
+//	① 跳过重定向（同 URL、同 scheme）—— 对"重定向链路跳转超时"最有效：
+//	   原始主机是活的，只是跳转目标慢/不可达，不跟随即可立刻拿到
+//	   301/302 响应（Server / Location / Cookie 全部有效）
+//	② https → http —— 覆盖"子域只跑 HTTP"的情况（443 关闭或被过滤），
+//	   此时跳过重定向重试仍会连接失败，必须换 scheme
+//
+// 两步都失败时返回**首次**的结果 —— 它的错误信息才是主 URL 的真实失败原因。
+func (p *Prober) retryFallback(rawURL string, first *ProbeResult) *ProbeResult {
+	// 回退 1：跳过重定向（仅当主客户端会跟随重定向时才有意义）
+	if p.clientNoFollow != nil {
+		if r := p.probeOnce(rawURL, p.clientNoFollow); r.Err == "" {
+			r.RetriedWith = "no-follow"
+			return r
+		}
+	}
+	// 回退 2：https 失败 → 改试 http（同主机、同端口）
+	if strings.HasPrefix(rawURL, "https://") {
+		httpURL := "http://" + strings.TrimPrefix(rawURL, "https://")
+		if r := p.probeOnce(httpURL, p.client); r.Err == "" {
+			// ⭐ 身份保留原 URL（子域不变）；"数据实际来自 http"这件事
+			//   由 RetriedWith 如实标注，FinalURL 记录实际地址
+			r.URL = rawURL
+			r.RetriedWith = "http"
+			return r
+		}
+	}
+	return first
+}
+
+// RetryLabel 返回降级重试的展示标签（空 = 未重试）
+func (r *ProbeResult) RetryLabel() string {
+	switch r.RetriedWith {
+	case "no-follow":
+		return "跳过重定向"
+	case "http":
+		return "http 回退"
+	}
+	return ""
+}
+
+// newProbeResult 创建初始结果（含必须初始化的 map 字段）
+func newProbeResult(rawURL string) *ProbeResult {
+	return &ProbeResult{URL: rawURL, CFHeaders: map[string]string{},
+		CDNHeaders: map[string]string{}, SecurityHdrs: map[string]string{}}
+}
+
+// probeOnce 单次探测（不做缓存、不做降级重试）
+func (p *Prober) probeOnce(rawURL string, cl *http.Client) *ProbeResult {
+	r := newProbeResult(rawURL)
+	u, err := parseURL(rawURL)
+	if err != nil {
+		r.Err = err.Error()
+		return r
+	}
+	r.Port = u.port()
 
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
@@ -241,7 +339,7 @@ func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 	}
 
 	start := time.Now()
-	resp, err := p.client.Do(req)
+	resp, err := cl.Do(req)
 	r.RTT = time.Since(start)
 	if err != nil {
 		r.Err = err.Error()
@@ -342,10 +440,6 @@ func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 		p.grabFavicon(u, r)
 	}
 
-	// ⭐ 写缓存（失败结果由 Cache.Put 内部过滤）
-	if p.cfg.Cache != nil {
-		p.cfg.Cache.Put(cacheKey, r)
-	}
 	return r
 }
 

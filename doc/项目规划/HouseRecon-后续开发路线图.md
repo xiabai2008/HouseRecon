@@ -33,7 +33,7 @@ go build -o wukan.exe ./cmd/wukan
 # ③ 冒烟测试：应看到 ASCII 启动页
 ./wukan.exe help
 
-# ④ 单元测试：应 58 项全过
+# ④ 单元测试：应 72 项全过
 go test ./...
 # 期望输出：ok  github.com/wukan/wukan/internal/httpprobe
 #           ok  github.com/wukan/wukan/internal/ipinfo
@@ -178,8 +178,8 @@ cd prototype/wukan-go
 |---|---|---|---|
 | P0-1 | ✅ **端口扫描结果缓存**（已完成 2026-10-10：正 6h / 负 10min，缓存键含 Host 头） | 同 tech 思路。端口状态变化比指纹快，TTL 建议 **6 小时**（非 1 天） | 小 |
 | P0-2 | ✅ **favicon 表支持外部加载**（已完成 2026-10-10：`~/.wukan/favicon-extra.json` 覆盖/扩充，容忍 BOM） | 现在改一条哈希就要重编译。支持 `~/.wukan/favicon-extra.json` 覆盖/扩充 | 小 |
-| P0-3 | **tech 失败子域重试** | 实测有 4 个子域重定向后超时；失败时改试 http:// 或跳过重定向 | 小 |
-| P0-4 | **给 hackertarget 加 key 支持** | 免费层仅 50 次/天，批量场景根本不够 | 小 |
+| P0-3 | ✅ **tech 失败子域重试**（已完成 2026-10-11：失败后跳过重定向 → http 回退；`--no-tech-retry`/`--no-retry` 可关） | 实测有 4 个子域重定向后超时；失败时改试 http:// 或跳过重定向 | 小 |
+| P0-4 | ✅ **给 hackertarget 加 key 支持**（已完成 2026-10-11：`WUKAN_HACKERTARGET_KEY`；配额错误提示可行动） | 免费层仅 50 次/天，批量场景根本不够 | 小 |
 
 ### 🟡 P1 —— 功能增强
 
@@ -203,8 +203,8 @@ cd prototype/wukan-go
 
 ```
 ✅ P0-1 + P0-2  已完成（2026-10-10）
-▶ 下一步：P0-3 + P0-4（补齐数据源短板）
-然后 P1-1          （diff 是最有产品价值的一步）
+✅ P0-3 + P0-4  已完成（2026-10-11）
+▶ 下一步：P1-1（多目标 diff 变化监控 —— 最有产品价值的一步）
 ```
 
 ---
@@ -214,7 +214,7 @@ cd prototype/wukan-go
 | # | 问题 | 影响 |
 |---|---|---|
 | 1 | **CT 源配额紧**（certspotter 100 次/小时） | 大量目标需分批或自备 key |
-| 2 | **被动 DNS 配额 50 次/天**（hackertarget） | 批量场景严重受限 → P0-4 |
+| 2 | **被动 DNS 配额 50 次/天**（hackertarget） | ✅ 已加 key 支持（`WUKAN_HACKERTARGET_KEY`），批量场景可提升额度 |
 | 3 | **favicon 表仅 23 条** | 命中率有限，且图标天然易碰撞 |
 | 4 | **子域"存活"只验 DNS 解析** | 有泛域名时几乎全"存活"，需 HTTP 确认 |
 | 5 | **端口扫描无法区分 filtered 与 closed-for-open** | TCP connect 的固有代价，已在输出中说明 |
@@ -231,7 +231,7 @@ cd prototype/wukan-go
 | `rdap.org` | 注册信息 | 宽松 | 自动跳转到各注册局 |
 | `api.certspotter.com` | 证书透明度 | **100 次/小时** | 主源，3.1s 稳定 |
 | `crt.sh` | 证书透明度 | 宽松 | 备源，**常 502**，重试 2 次 |
-| `api.hackertarget.com` | 被动 DNS / IP 反查 | **50 次/天** | 无 key 可用 |
+| `api.hackertarget.com` | 被动 DNS / IP 反查 | **50 次/天** | 可配 `WUKAN_HACKERTARGET_KEY` 提升额度 |
 | `ipwho.is` | IP 归属（主） | 10000 次/月 | — |
 | `ip-api.com` | IP 归属（补 hosting/proxy） | 45 次/分钟 | 判定可能误报，已分开归类 |
 
@@ -247,7 +247,7 @@ cd prototype/wukan-go
 cd prototype/wukan-go
 gofmt -l .                  # 应为空
 go vet ./...                # 应无输出
-go test ./...               # 应 58 项全过（新增功能需补测试）
+go test ./...               # 应 72 项全过（新增功能需补测试）
 go build -o wukan.exe ./cmd/wukan
 ```
 

@@ -118,6 +118,11 @@ type Options struct {
 	TechMaxTargets int
 	// TechNoFavicon 不抓 favicon（更快）
 	TechNoFavicon bool
+	// TechRetryFallback 失败目标是否降级重试（跳过重定向 / http 回退）
+	//
+	// ⭐ 实测有 4 个子域"重定向后超时"，降级重试能把它们从"探测失败"
+	//   变成"可分析的结果"（原始 301/302 本身就有指纹价值）。
+	TechRetryFallback bool
 	// TechSubdomains ⭐ 是否对发现的存活子域也做指纹探测
 	//
 	// 这是"覆盖整个攻击面"的关键 —— 子域往往跑着不同的应用、
@@ -171,6 +176,8 @@ func DefaultOptions() Options {
 		TechTimeout:     8 * time.Second,
 		TechConcurrency: 8,
 		TechMaxTargets:  20,
+		// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
+		TechRetryFallback: true,
 		// ⭐ 子域探测默认开启 —— 这是"覆盖整个攻击面"的关键
 		TechSubdomains:  true,
 		TechSubMax:      15,
@@ -1678,8 +1685,9 @@ func (r *Runner) probeTechTargets(targets []techTarget) []*httpprobe.ProbeResult
 			tcfg.Timeout = r.opt.TechTimeout
 			tcfg.Concurrency = r.opt.TechConcurrency
 			tcfg.GrabFavicon = !r.opt.TechNoFavicon
-			tcfg.HostHeader = h          // ⭐ 本组统一的 Host 头
-			tcfg.Cache = r.opt.TechCache // ⭐ 传入缓存
+			tcfg.RetryFallback = r.opt.TechRetryFallback // ⭐ 失败降级重试
+			tcfg.HostHeader = h                          // ⭐ 本组统一的 Host 头
+			tcfg.Cache = r.opt.TechCache                 // ⭐ 传入缓存
 
 			urls := make([]string, len(idx))
 			for k, i := range idx {

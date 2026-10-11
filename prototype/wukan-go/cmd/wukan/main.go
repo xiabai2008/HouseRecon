@@ -745,6 +745,7 @@ type reconFlags struct {
 	noTechCache    bool
 	techCacheStats bool
 	techCacheClear bool
+	noTechRetry    bool
 	noRdns         bool
 	rdnsMax        int
 	noIPInfo       bool
@@ -798,6 +799,8 @@ func runRecon(args []string) {
 	// ⭐ HTTP 指纹采集是**主动探测**（发 HTTP 请求 + favicon），默认不开启
 	opt.TechProbe = f.doTech
 	opt.TechNoFavicon = f.techNoFav
+	// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
+	opt.TechRetryFallback = !f.noTechRetry
 	// ⭐ 子域批量探测默认开启（覆盖整个攻击面）
 	opt.TechSubdomains = !f.noTechSub
 	if f.techMax > 0 {
@@ -1125,6 +1128,8 @@ func parseReconFlags(args []string) *reconFlags {
 			f.techCacheStats = true
 		case "--tech-cache-clear":
 			f.techCacheClear = true
+		case "--no-tech-retry":
+			f.noTechRetry = true
 		case "--no-rdns":
 			f.noRdns = true
 		case "--rdns-max":
@@ -1213,6 +1218,7 @@ func printReconUsage() {
       --tech-max <n>    最多探测多少个目标，含子域（默认 20）
       --tech-sub-max <n> 最多探测多少个子域（默认 15）
       --no-tech-sub     只探根域，不探子域
+      --no-tech-retry   失败目标不降级重试（默认开启：跳过重定向 / http 回退）
       --no-tech-cache   不用 tech 指纹缓存（强制重新探测）
       --tech-cache-stats  查看 tech 缓存统计后退出
       --tech-cache-clear  清空 tech 缓存后退出
@@ -1705,6 +1711,7 @@ type techFlags struct {
 	concurrency   int
 	noFollow      bool
 	noFavicon     bool
+	noRetry       bool
 	onlyConflicts bool
 	quiet         bool
 }
@@ -1729,6 +1736,8 @@ func runTech(args []string) {
 	cfg.Concurrency = f.concurrency
 	cfg.FollowRedirect = !f.noFollow
 	cfg.GrabFavicon = !f.noFavicon
+	// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
+	cfg.RetryFallback = !f.noRetry
 
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "[%s] ⚠ 主动探测 %d 个 URL | 并发 %d | 超时 %ds\n",
@@ -1817,8 +1826,13 @@ func writeTechTable(w io.Writer, results []*httpprobe.ProbeResult,
 		if r.Err != "" {
 			status = "ERR"
 		}
+		// ⭐ 降级重试必须如实标注（https 显示但数据来自 http 回退）
+		u := truncateStr2(r.URL, 40)
+		if l := r.RetryLabel(); l != "" {
+			u += "（" + l + "）"
+		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
-			truncateStr2(r.URL, 40), status,
+			u, status,
 			dashIfEmpty2(r.Server), dashIfEmpty2(strings.Join(r.BodyKeywords, "/")),
 			truncateStr2(dashIfEmpty2(r.Title), 26))
 	}
@@ -1907,6 +1921,17 @@ func techSummary(w io.Writer, results []*httpprobe.ProbeResult,
 	fmt.Fprintf(w, "探测 %d 个 URL | 无冲突 %d | 有冲突 %d\n",
 		summary.Total, summary.Clean, summary.WithAny)
 
+	// ⭐ 降级重试透明化：有多少结果是"首次失败、重试成功"的
+	retried := 0
+	for _, r := range results {
+		if r != nil && r.RetriedWith != "" {
+			retried++
+		}
+	}
+	if retried > 0 {
+		fmt.Fprintf(w, "  ↻ %d 个目标经降级重试成功（跳过重定向 / http 回退）\n", retried)
+	}
+
 	if len(summary.BySev) > 0 {
 		parts := []string{}
 		for _, sev := range []string{"high", "medium", "low", "info"} {
@@ -1958,6 +1983,8 @@ func parseTechFlags(args []string) *techFlags {
 			f.noFollow = true
 		case "--no-favicon":
 			f.noFavicon = true
+		case "--no-retry":
+			f.noRetry = true
 		case "-q", "--quiet":
 			f.quiet = true
 		}
@@ -2051,6 +2078,7 @@ func printTechUsage() {
       --timeout <秒>     超时（默认 8）
       --no-follow        不跟随重定向
       --no-favicon       不抓 favicon（更快）
+      --no-retry         失败目标不降级重试（默认开启：跳过重定向 / http 回退）
   -q, --quiet           只输出结果
   -h, --help            显示本帮助
 
