@@ -131,6 +131,27 @@ func TestBuildSnapshot_Coverage(t *testing.T) {
 	}
 }
 
+// ⭐ H2：JARM 全零哨兵在快照中归一化为空（"未采集"语义，不进 diff）
+func TestBuildSnapshot_JARMFailedNormalized(t *testing.T) {
+	rep := &Report{
+		Target: "example.com",
+		Tech: []*httpprobe.ProbeResult{
+			{URL: "https://a.example.com", StatusCode: 200, JARM: strings.Repeat("0", 62)},
+			{URL: "https://b.example.com", StatusCode: 200,
+				JARM: "27d40d40d00040d1dc42d43d00041d6183ff1bfae51ebd88d70384363d525c"},
+		},
+	}
+	snap := BuildSnapshot(rep)
+	for _, st := range snap.Tech {
+		if st.URL == "https://a.example.com" && st.JARM != "" {
+			t.Errorf("全零哨兵应归一化为空，实际 %q", st.JARM)
+		}
+		if st.URL == "https://b.example.com" && st.JARM == "" {
+			t.Error("真实指纹不应被误清")
+		}
+	}
+}
+
 // nil / 空报告防御
 func TestBuildSnapshot_NilSafety(t *testing.T) {
 	if snap := BuildSnapshot(nil); snap != nil {

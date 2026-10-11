@@ -538,6 +538,27 @@ func jarmVersionByte(version string) string {
 	return string(options[n])
 }
 
+// JARMFailed 该结果是否为"探测失败"哨兵（62 个 0）
+//
+// ⭐ 全 0 不是指纹，是"任一探测超时 / 全部失败"的编码（与参考实现一致）。
+//
+//	它绝不能参与快照与 diff —— 否则一次网络抖动会被报成
+//	"TLS 栈变了"的假阳性（审查发现的 H2）。
+func (r *ProbeResult) JARMFailed() bool {
+	return r.JARM == strings.Repeat("0", 62)
+}
+
+// JARMDisplay JARM 的展示文本（"" = 未采集；"失败" = 探测失败哨兵；否则完整哈希）
+func (r *ProbeResult) JARMDisplay() string {
+	if r.JARM == "" {
+		return ""
+	}
+	if r.JARMFailed() {
+		return "失败"
+	}
+	return r.JARM
+}
+
 // JARMFingerprint 对 dialHost:port 计算 JARM 指纹（62 字符）
 //
 //	sniHost 用于 ClientHello 的 SNI —— ⭐ IP 直连 + HostHeader 的 CDN 场景

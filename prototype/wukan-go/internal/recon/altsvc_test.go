@@ -97,3 +97,20 @@ func TestAnalyze_AltSvcNoDataNoNoise(t *testing.T) {
 		}
 	}
 }
+
+// ⭐ M2：Alt-Svc 声明非 443 端口时不与 UDP/443 探测做交叉判定
+func TestAnalyze_AltSvcOtherPortNoCrossCheck(t *testing.T) {
+	rep := &Report{
+		Target: "example.com",
+		QUIC:   []quic.Result{{Host: "5.6.7.8", Port: 443, State: quic.StateOpenFiltered}},
+		Tech: []*httpprobe.ProbeResult{
+			// 声明的是 8443 —— 与 UDP/443 探测无关，不应触发"配置漂移"
+			{URL: "https://5.6.7.8:443", IP: "5.6.7.8", AltSvc: `h3=":8443"; ma=86400`},
+		},
+	}
+	for _, f := range Analyze(rep) {
+		if f.Type == "altsvc_unreachable" {
+			t.Errorf("声明 :8443 不应触发 UDP/443 判定：%+v", f)
+		}
+	}
+}

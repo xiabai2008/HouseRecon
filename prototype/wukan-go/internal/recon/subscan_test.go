@@ -81,6 +81,24 @@ func TestSelectSubScanTargets_Limit(t *testing.T) {
 	}
 }
 
+// ⭐ M6：每子域最多取 2 个新 IP（多 A/AAAA 记录会成倍放大连接数）
+func TestSelectSubScanTargets_IPCap(t *testing.T) {
+	rep := &Report{
+		Target: "example.com",
+		CT: &SubdomainResult{Subdomains: []*SubdomainInfo{
+			{Name: "multi.example.com", Resolves: true,
+				ResolveIPs: []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"}},
+		}},
+	}
+	got := selectSubScanTargets(rep, map[string]bool{}, 10)
+	if len(got) != 1 {
+		t.Fatalf("应选中 1 个子域，实际 %+v", got)
+	}
+	if len(got[0].IPs) != 2 {
+		t.Errorf("每子域应最多取 2 个新 IP，实际 %d 个：%+v", len(got[0].IPs), got[0].IPs)
+	}
+}
+
 // ⭐⭐ 子域扫描结果（Host=子域名）不得混入 tech 的"根域 CDN 节点"选择 ——
 //
 //	否则会用根域 Host 头去探子域 IP，拿到错误站点（与项目最重的

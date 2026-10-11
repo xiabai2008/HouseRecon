@@ -85,6 +85,47 @@ func TestBuildLocalTimeline(t *testing.T) {
 	}
 }
 
+// ⭐⭐ H3：最新快照覆盖不完整时，不得把"本次没采"误报成"已消失"
+func TestBuildLocalTimeline_CoverageBasis(t *testing.T) {
+	t0 := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	s1 := mkSnap("example.com", func(s *Snapshot) {
+		s.TakenAt = t0
+		s.Subdomains = []string{"a.example.com"}
+		s.OpenPorts = []SnapshotPort{{IP: "1.1.1.1", Port: 443, Service: "https"}}
+	})
+	// 最新快照：CT/被动/端口全部没采（数据源失败或忘了参数）
+	s2 := mkSnap("example.com", func(s *Snapshot) {
+		s.TakenAt = t0.Add(24 * time.Hour)
+		s.Coverage.CT = false
+		s.Coverage.Passive = false
+		s.Coverage.Ports = false
+		s.OpenPorts = nil
+	})
+	tl := BuildLocalTimeline([]*Snapshot{s1, s2})
+	if !tl.Subdomains[0].Present {
+		t.Error("⭐ 覆盖不完整的最新快照不得把子域判成已消失")
+	}
+	if !tl.Ports[0].Present {
+		t.Error("⭐ 覆盖不完整的最新快照不得把端口判成已消失")
+	}
+	if tl.Note == "" {
+		t.Error("应提示最新快照覆盖不完整")
+	}
+
+	// 对照：覆盖完整的快照里真的消失 → 判为已消失
+	s3 := mkSnap("example.com", func(s *Snapshot) {
+		s.TakenAt = t0.Add(48 * time.Hour)
+		// 覆盖完整（mkSnap 默认），但子域/端口为空 → 真消失
+	})
+	tl2 := BuildLocalTimeline([]*Snapshot{s1, s3})
+	if tl2.Subdomains[0].Present {
+		t.Error("覆盖完整快照中消失应判为已消失")
+	}
+	if tl2.Ports[0].Present {
+		t.Error("覆盖完整快照中消失的端口应判为已消失")
+	}
+}
+
 // 渲染：包含关键标记
 func TestWriteLocalTimeline(t *testing.T) {
 	t0 := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)

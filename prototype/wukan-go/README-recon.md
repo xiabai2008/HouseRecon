@@ -1,5 +1,9 @@
 # wukan recon — 目标信息卡
 
+> ⚠️ 本文档描述 recon 的**早期版本**；新增能力（`--snapshot` 变化监控、`--tech-jarm`/`--tech-no-h2`
+> 深度指纹、`--ports-sub-max` 子域端口扫描、`--no-timeline`、`--format markdown/html` 报告导出）
+> 以主 [README](../../README.md) 与 `wukan recon -h` 为准。
+
 **一个命令摸清一个域的全貌。全部被动采集，不向目标发送任何探测包。**
 
 ## 编译

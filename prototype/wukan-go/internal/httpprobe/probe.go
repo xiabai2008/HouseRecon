@@ -245,11 +245,12 @@ func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 		return r
 	}
 
-	// ⭐ 缓存查询
+	// ⭐ 缓存查询（键含采集能力开关 —— 见 MakeCacheKey 注释）
 	var cacheKey string
 	if p.cfg.Cache != nil {
 		cacheKey = MakeCacheKey(rawURL, p.cfg.HostHeader,
-			p.cfg.FollowRedirect, p.cfg.UserAgent)
+			p.cfg.FollowRedirect, p.cfg.UserAgent,
+			CapabilityKey(p.cfg.GrabFavicon, p.cfg.GrabH2, p.cfg.GrabJARM))
 		if cached, ok := p.cfg.Cache.Get(cacheKey); ok {
 			// ⭐ 用原 URL 覆盖（缓存里的 URL 可能是旧格式）
 			cached.URL = rawURL

@@ -1872,6 +1872,11 @@ func runTech(args []string) {
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "[%s] ⚠ 主动探测 %d 个 URL | 并发 %d | 超时 %ds\n",
 			version, len(urls), cfg.Concurrency, f.timeout)
+		// ⭐ M5：JARM 是"每目标 +10 连接"的重活，批量场景先让用户看到量级
+		if f.jarm && len(urls) > 20 {
+			fmt.Fprintf(os.Stderr, "⚠ --jarm 已开启：%d 个 URL × 约 11 个连接 ≈ %d 个连接\n",
+				len(urls), len(urls)*11)
+		}
 	}
 
 	prober := httpprobe.New(cfg)
@@ -1943,8 +1948,29 @@ func inferTechFormat(path string) string {
 func writeTechTable(w io.Writer, results []*httpprobe.ProbeResult,
 	reports []*httpprobe.ConflictReport, onlyConflicts bool) {
 
+	// ⭐ M3：有 JARM/H2 数据时增加"深度指纹"列（否则采集了却看不到）
+	hasJARM, hasH2 := false, false
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		if r.JARM != "" {
+			hasJARM = true
+		}
+		if r.H2Settings != "" {
+			hasH2 = true
+		}
+	}
+
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  URL\t状态\tServer\t技术栈\t标题")
+	header := "  URL\t状态\tServer\t技术栈\t标题"
+	if hasJARM {
+		header += "\tJARM"
+	}
+	if hasH2 {
+		header += "\tH2"
+	}
+	fmt.Fprintln(tw, header)
 	for i, r := range results {
 		if r == nil {
 			continue
@@ -1961,10 +1987,17 @@ func writeTechTable(w io.Writer, results []*httpprobe.ProbeResult,
 		if l := r.RetryLabel(); l != "" {
 			u += "（" + l + "）"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+		line := fmt.Sprintf("  %s\t%s\t%s\t%s\t%s",
 			u, status,
 			dashIfEmpty2(r.Server), dashIfEmpty2(strings.Join(r.BodyKeywords, "/")),
 			truncateStr2(dashIfEmpty2(r.Title), 26))
+		if hasJARM {
+			line += "\t" + dashIfEmpty2(truncateStr2(r.JARMDisplay(), 16))
+		}
+		if hasH2 {
+			line += "\t" + dashIfEmpty2(truncateStr2(r.H2Settings, 24))
+		}
+		fmt.Fprintln(tw, line)
 	}
 	tw.Flush()
 
@@ -2023,6 +2056,7 @@ func writeTechCSV(w io.Writer, results []*httpprobe.ProbeResult) error {
 		"url", "ip", "port", "status_code", "server", "powered_by",
 		"tls_version", "alpn", "cert_issuer", "title", "body_tech",
 		"favicon_murmur", "favicon_len", "title_len", "rtt_ms", "error",
+		"jarm", "h2_settings",
 	}); err != nil {
 		return err
 	}
@@ -2038,6 +2072,7 @@ func writeTechCSV(w io.Writer, results []*httpprobe.ProbeResult) error {
 			strconv.Itoa(len(r.Title)),
 			strconv.FormatFloat(float64(r.RTT.Microseconds())/1000, 'f', 2, 64),
 			r.Err,
+			r.JARMDisplay(), r.H2Settings,
 		}); err != nil {
 			return err
 		}

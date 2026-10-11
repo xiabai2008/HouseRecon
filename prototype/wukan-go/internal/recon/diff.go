@@ -200,8 +200,40 @@ func normSet(items []string) map[string]bool {
 	return m
 }
 
-// diffPorts 端口差异（含 IP 轮换归并）
+// diffPorts 端口差异（含 IP 轮换归并与扫描集门控）
 func diffPorts(prev, curr *Snapshot, d *SnapshotDiff) {
+	// ⭐ H5 修复：只有**两次都扫描过**的 IP 上的"纯新增/纯消失"才可信 ——
+	//   子域选择集/解析 IP 漂移时，未共同扫描的 IP 上"新出现"的端口
+	//   不能断言是新暴露（可能一直开着，只是上次没扫）。
+	//   例外：同端口跨 IP 的"轮换"（CDN 节点移动）仍归并为低危提示。
+	prevIPs := map[string]bool{}
+	for _, ip := range prev.Coverage.PortsIPs {
+		prevIPs[ip] = true
+	}
+	currIPs := map[string]bool{}
+	for _, ip := range curr.Coverage.PortsIPs {
+		currIPs[ip] = true
+	}
+	prevHasPorts := len(prev.OpenPorts) > 0
+	currHasPorts := len(curr.OpenPorts) > 0
+	if (len(prevIPs) == 0 && prevHasPorts) || (len(currIPs) == 0 && currHasPorts) {
+		// 缺少扫描集记录（旧格式快照，且确实有端口要对比）→ 不可比
+		ch := coverageChange(CoverageCategoryPorts, true, true)
+		ch.Detail = "缺少扫描主机集合记录（旧格式快照），端口差异不可比。" +
+			"用新版本重跑一次即可恢复对比。"
+		d.Changes = append(d.Changes, ch)
+		return
+	}
+	if !prevHasPorts && !currHasPorts {
+		return // 两边都没有开放端口可对比，静默
+	}
+	common := map[string]bool{}
+	for ip := range prevIPs {
+		if currIPs[ip] {
+			common[ip] = true
+		}
+	}
+
 	p := portMap(prev.OpenPorts)
 	c := portMap(curr.OpenPorts)
 
@@ -222,7 +254,9 @@ func diffPorts(prev, curr *Snapshot, d *SnapshotDiff) {
 	// ⭐ IP 轮换归并：新增端口与消失端口的**端口号相同、服务兼容**时，
 	//   更可能是 CDN 节点轮换/迁移（example.com 这类域名每轮解析都在变），
 	//   归并为一条 port_ip_changed（low），而不是 port_added(high) 误导用户。
+	//   轮换判定不受"共同扫描 IP"门控限制（它本身就是跨 IP 的解释）。
 	usedRemoved := map[string]bool{}
+	suppressed := 0
 	for _, ak := range added {
 		ap := c[ak]
 		match := ""
@@ -242,17 +276,27 @@ func diffPorts(prev, curr *Snapshot, d *SnapshotDiff) {
 			ch.Before = match
 			ch.After = ak
 			d.Changes = append(d.Changes, ch)
-		} else {
+			continue
+		}
+		// 纯新增：仅在"共同扫描过"的 IP 上才可信
+		if common[portHostOf(ak)] {
 			d.Changes = append(d.Changes, changeFor(ChangePortAdded, ak))
+		} else {
+			suppressed++
 		}
 	}
 	for _, rk := range removed {
-		if !usedRemoved[rk] {
+		if usedRemoved[rk] {
+			continue
+		}
+		if common[portHostOf(rk)] {
 			d.Changes = append(d.Changes, changeFor(ChangePortRemoved, rk))
+		} else {
+			suppressed++
 		}
 	}
 
-	// 两端都在：服务识别变化
+	// 两端都在：服务识别变化（键在两侧都存在 ⇒ 其 IP 必然共同扫描过）
 	for key, cp := range c {
 		pp, ok := p[key]
 		if !ok {
@@ -266,6 +310,13 @@ func diffPorts(prev, curr *Snapshot, d *SnapshotDiff) {
 			ch.After = cp.Service
 			d.Changes = append(d.Changes, ch)
 		}
+	}
+
+	// 扫描集完全无交集且没有任何轮换配对 → 明确说明不可比
+	if len(common) == 0 && suppressed > 0 && len(d.Changes) == 0 {
+		ch := coverageChange(CoverageCategoryPorts, true, true)
+		ch.Detail = "两次扫描的 IP 集合不重叠（解析或子域选择变化），端口差异不可比。"
+		d.Changes = append(d.Changes, ch)
 	}
 }
 
@@ -283,6 +334,31 @@ func portMap(ports []SnapshotPort) map[string]SnapshotPort {
 		m[portKey(p.IP, p.Host, p.Port)] = p
 	}
 	return m
+}
+
+// portHostOf 从端口键（ip:port）取主机部分（IPv6 含冒号，按最后一个冒号切）
+func portHostOf(key string) string {
+	if i := strings.LastIndex(key, ":"); i >= 0 {
+		return key[:i]
+	}
+	return key
+}
+
+// jarmIsFailed JARM 是否为"探测失败"哨兵（62 个 0）
+//
+// ⭐ 快照层已把全 0 归一化为空；这里再做一层防御（手工编辑的快照文件）。
+func jarmIsFailed(s string) bool { return s == strings.Repeat("0", 62) }
+
+// h2Core H2 指纹的比较核心（仅 SETTINGS 段）
+//
+// ⭐ 审查 M1：WINDOW_UPDATE 的到达时机有采样抖动（300ms 补读窗口），
+//
+//	用完整串比较会产生假"指纹变化"；只比 SETTINGS 部分。
+func h2Core(s string) string {
+	if i := strings.IndexByte(s, '|'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // diffTech HTTP 端点指纹差异（只比较两端都在的 URL）
@@ -327,13 +403,15 @@ func diffTech(prev, curr *Snapshot, d *SnapshotDiff) {
 			ch.After = truncateS(ct.Title, 40)
 			d.Changes = append(d.Changes, ch)
 		}
-		if pt.JARM != "" && ct.JARM != "" && pt.JARM != ct.JARM {
+		if pt.JARM != "" && ct.JARM != "" && pt.JARM != ct.JARM &&
+			!jarmIsFailed(pt.JARM) && !jarmIsFailed(ct.JARM) {
 			ch := changeFor(ChangeTechJARMChanged, url)
 			ch.Before = pt.JARM
 			ch.After = ct.JARM
 			d.Changes = append(d.Changes, ch)
 		}
-		if pt.H2Settings != "" && ct.H2Settings != "" && pt.H2Settings != ct.H2Settings {
+		if pt.H2Settings != "" && ct.H2Settings != "" &&
+			h2Core(pt.H2Settings) != h2Core(ct.H2Settings) {
 			ch := changeFor(ChangeTechH2Changed, url)
 			ch.Before = truncateS(pt.H2Settings, 40)
 			ch.After = truncateS(ct.H2Settings, 40)

@@ -63,14 +63,22 @@ func H2Fingerprint(dialHost string, port int, sniHost string, timeout time.Durat
 	pending := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
 
-	// 读帧循环：
+	// 读帧循环（⭐ L1：整体 deadline 兜底 —— 慢滴服务器不会拖满 3×timeout）：
 	//   第 1 次读用完整超时（等 SETTINGS）；
 	//   拿到 SETTINGS 后再补读一次（最多 300ms）以捕获同批的 WINDOW_UPDATE；
 	//   仍没有就结束（很多服务器确实不发 WINDOW_UPDATE，不能白等）。
+	overall := time.Now().Add(timeout)
 	for attempt := 0; attempt < 3; attempt++ {
+		remaining := time.Until(overall)
+		if remaining <= 0 {
+			break
+		}
 		wait := timeout
 		if gotSettings {
 			wait = 300 * time.Millisecond
+		}
+		if wait > remaining {
+			wait = remaining
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(wait))
 		n, err := conn.Read(tmp)

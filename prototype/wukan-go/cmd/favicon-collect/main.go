@@ -72,6 +72,7 @@ func main() {
 	seedFile := flag.String("f", "", "种子文件（产品名 | 域名或URL | 类别）")
 	outFile := flag.String("o", "favicon-extra.json", "输出扩展表路径")
 	timeout := flag.Int("timeout", 15, "单个下载超时（秒）")
+	force := flag.Bool("force", false, "存在失败条目时仍写正式输出（默认写 .partial.json，防止不完整的表覆盖已核对的表）")
 	flag.Parse()
 
 	if *seedFile == "" {
@@ -102,14 +103,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  ✗ %-24s %v\n", s.Name, err)
 			continue
 		}
-		// ⭐ 哈希碰撞检测：不同产品同一图标是结构性事实（图标只有几百字节），
-		//   但必须显式告知，让核对者决定保留哪个
+		// ⭐ 哈希碰撞：默认**不写入**（保留第一个）—— 让"人工取舍"真正发生，
+		//   而不是两条都进文件后由加载器静默二选一
 		if prev, ok := seenHash[r.Hash]; ok {
-			fmt.Fprintf(os.Stderr, "  ⚠ %-24s 哈希与 %s 相同（%d）—— 图标碰撞，人工取舍\n",
-				r.Name, prev, r.Hash)
-		} else {
-			seenHash[r.Hash] = r.Name
+			fmt.Fprintf(os.Stderr, "  ⚠ %-24s 哈希与 %s 相同（%d）—— 图标碰撞，已跳过（保留 %s）\n",
+				r.Name, prev, r.Hash, prev)
+			continue
 		}
+		seenHash[r.Hash] = r.Name
 		results = append(results, *r)
 		fmt.Fprintf(os.Stderr, "  ✓ %-24s hash=%-12d md5=%s size=%d\n",
 			r.Name, r.Hash, r.MD5[:8], r.Size)
@@ -126,14 +127,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "序列化失败: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(*outFile, b, 0o644); err != nil {
+	// ⭐ M4 修复：
+	//   ① 有失败条目时默认写 .partial.json（不完整的表不能静默覆盖已核对的表）
+	//   ② 原子写（tmp + rename），中断不会留半截文件
+	outPath := *outFile
+	if len(failed) > 0 && !*force {
+		outPath = strings.TrimSuffix(*outFile, ".json") + ".partial.json"
+	}
+	tmp := outPath + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "写入失败: %v\n", err)
 		os.Exit(1)
+	}
+	if err := os.Rename(tmp, outPath); err != nil {
+		fmt.Fprintf(os.Stderr, "写入失败: %v\n", err)
+		os.Exit(1)
+	}
+	if outPath != *outFile {
+		fmt.Fprintf(os.Stderr, "⚠ 存在 %d 个失败条目，输出写到 %s（加 --force 可强制写 %s）\n",
+			len(failed), outPath, *outFile)
 	}
 
 	// 溯源清单（供人工核对：来源 URL + md5 + 日期）
 	fmt.Printf("\n===== 人工核对清单（务必核对后再启用）=====\n")
-	fmt.Printf("输出: %s（%d 条）\n\n", *outFile, len(ef.Entries))
+	fmt.Printf("输出: %s（%d 条）\n\n", outPath, len(ef.Entries))
 	fmt.Printf("%-24s %-14s %-34s %-10s %s\n", "产品", "hash", "md5", "size", "来源")
 	for _, r := range results {
 		fmt.Printf("%-24s %-14d %-34s %-10d %s\n", r.Name, r.Hash, r.MD5, r.Size, r.Source)

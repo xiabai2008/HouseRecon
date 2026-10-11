@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1179,11 +1180,16 @@ func Analyze(rep *Report) []Finding {
 	//
 	// ⚠️ 判读必须严谨：本地 UDP 探测无响应也可能是**路径阻断**
 	//   （运营商/防火墙丢 UDP），不能直接断言"服务不可用"—— 文案如实说明。
+	//
+	// ⭐ M2 修复：只对**声明端口为 443** 的做交叉（Alt-Svc 声明 :8443 之类
+	//   与 UDP/443 探测无关）；QUIC 状态为 NON_QUIC_RESP 时如实描述而非"无响应"。
 	if len(rep.QUIC) > 0 && len(rep.Tech) > 0 {
 		quicAlive := map[string]bool{}
+		quicState := map[string]string{}
 		quicHint := map[string]string{}
 		for _, q := range rep.QUIC {
 			quicAlive[q.Host] = q.IsQUIC()
+			quicState[q.Host] = q.State.String()
 			quicHint[q.Host] = q.StackHint
 		}
 		var falseDecl []string   // 声明 h3 但探测无响应
@@ -1196,11 +1202,18 @@ func Analyze(rep *Report) []Finding {
 			if !probed {
 				continue
 			}
-			declares := strings.Contains(strings.ToLower(t.AltSvc), "h3")
+			lower := strings.ToLower(t.AltSvc)
+			declares := strings.Contains(lower, "h3")
+			// ⭐ 只对声明 443 端口的做交叉判定
+			if declares {
+				if p := altSvcH3Port(lower); p != 0 && p != 443 {
+					continue
+				}
+			}
 			switch {
 			case declares && !alive:
-				falseDecl = append(falseDecl, fmt.Sprintf("%s Alt-Svc=%s",
-					t.IP, truncateS(t.AltSvc, 60)))
+				falseDecl = append(falseDecl, fmt.Sprintf("%s（UDP/443: %s）Alt-Svc=%s",
+					t.IP, quicState[t.IP], truncateS(t.AltSvc, 60)))
 			case !declares && alive:
 				ev := t.IP
 				if h := quicHint[t.IP]; h != "" {
@@ -1292,6 +1305,20 @@ func Analyze(rep *Report) []Finding {
 		for _, ip := range rep.DNS.IPs {
 			current[ip] = true
 		}
+		// ⭐ H4 修复：CDN 场景下各子域当前解析到的边缘 IP 与根域查询结果不同，
+		//   必须一并排除 —— 否则会把仍在服役的 CDN 边缘 IP 报成"源站候选"
+		if rep.CT != nil {
+			for _, sb := range rep.CT.Subdomains {
+				if sb == nil {
+					continue
+				}
+				for _, ip := range sb.ResolveIPs {
+					if ip = strings.TrimSpace(ip); ip != "" {
+						current[ip] = true
+					}
+				}
+			}
+		}
 		revByIP := map[string][]string{}
 		for _, rv := range rep.ReverseIP {
 			if rv != nil && len(rv.Hostnames) > 0 {
@@ -1356,12 +1383,18 @@ func Analyze(rep *Report) []Finding {
 				}
 				ev = append(ev, fmt.Sprintf("%s: %s → %s", e.IP, f, l))
 			}
+			// ⭐ L8 修复：仅当"前一个 IP 已下线后才出现新 IP"才是迁移；
+			//   多 IP 并存/轮换（CDN 常见）不要断言"变更"
+			lastLine := fmt.Sprintf("最近新增：%s（与既有 IP 并存/轮换，非明确迁移）", latest.IP)
+			if prevIP.LastSeen.Before(latest.FirstSeen) {
+				lastLine = "最近一次迁移：" + prevIP.IP + " → " + latest.IP
+			}
 			add("info", "pdn_migration",
 				fmt.Sprintf("根域历史解析过 %d 个 IP（最近新增 %s 于 %s）", len(chain), latest.IP, first),
 				"时间线来自被动 DNS 历史记录（first/last seen），能看出**何时迁移、迁移到哪**。\n"+
 					"用途：① 核对资产迁移记录 ② 旧 IP 若仍可访问且已不属于你，注意清理解析残留 "+
 					"③ 与快照 diff 配合观察未来变化。\n"+
-					"最近一次变更："+prevIP.IP+" → "+latest.IP,
+					lastLine,
 				ev...)
 		}
 	}
@@ -1645,6 +1678,35 @@ func thirdPartyToken(txt string) string {
 }
 
 // tcpReachable 判断该 IP 是否在当前 TCP 解析结果中
+// altSvcH3Port 从 Alt-Svc 头中解析 h3 声明的端口（0 = 未找到）
+//
+// 形如 `h3=":443"; ma=86400` 或 `h3="alt.example.com:8443"`。
+// 用于 M2 修复：只有声明端口为 443 时才与 UDP/443 探测做交叉判定。
+func altSvcH3Port(lower string) int {
+	i := strings.Index(lower, "h3")
+	if i < 0 {
+		return 0
+	}
+	rest := lower[i:]
+	q := strings.IndexByte(rest, '"')
+	if q < 0 {
+		return 0
+	}
+	rest = rest[q+1:]
+	if end := strings.IndexByte(rest, '"'); end >= 0 {
+		rest = rest[:end]
+	}
+	c := strings.LastIndexByte(rest, ':')
+	if c < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest[c+1:]))
+	if err != nil || n < 1 || n > 65535 {
+		return 0
+	}
+	return n
+}
+
 func tcpReachable(rep *Report, ip string) bool {
 	if rep == nil || rep.DNS == nil {
 		return false
@@ -1792,6 +1854,11 @@ func selectSubScanTargets(rep *Report, scanned map[string]bool, max int) []subSc
 			}
 			scanned[ip] = true
 			ips = append(ips, ip)
+			// ⭐ M6：每个子域最多取 2 个新 IP ——
+			//   多 A/AAAA 记录会成倍放大连接数（10 子域 × 4 IP × top100 ≈ 4000 连接）
+			if len(ips) >= 2 {
+				break
+			}
 		}
 		if len(ips) == 0 {
 			continue

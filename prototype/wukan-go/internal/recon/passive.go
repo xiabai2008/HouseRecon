@@ -540,6 +540,9 @@ type FilePassiveCache struct {
 	ttl   time.Duration
 	mu    sync.RWMutex
 	items map[string]passiveCacheEntry
+	// loadErr 载入失败（文件损坏）—— Save 据此拒绝覆盖（L7 修复：
+	// 解析失败后若照常落盘，会用一个"只有新条目"的文件静默覆盖损坏但可能可修的原文件）
+	loadErr error
 }
 
 type passiveCacheEntry struct {
@@ -577,10 +580,19 @@ func (c *FilePassiveCache) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, &c.items)
+	if err := json.Unmarshal(b, &c.items); err != nil {
+		// ⭐ L7：记录载入失败，Save 将拒绝覆盖（防静默覆盖损坏文件）
+		c.loadErr = err
+		return err
+	}
+	return nil
 }
 
 func (c *FilePassiveCache) save() error {
+	if c.loadErr != nil {
+		return fmt.Errorf("被动缓存文件损坏，拒绝覆盖（请手动检查/删除 %s）: %w",
+			c.path, c.loadErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
 		return err
 	}

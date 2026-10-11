@@ -65,8 +65,15 @@ func TestAnalyze_OriginCandidate(t *testing.T) {
 		IPInfo: []*ipinfo.Info{
 			{IP: "1.1.1.1", Valid: true, Flags: []string{"cdn"}, FlagSources: []string{"org"}},
 		},
+		// ⭐ H4：子域当前解析到的 CDN 边缘 IP 也必须被排除
+		CT: &SubdomainResult{Subdomains: []*SubdomainInfo{
+			{Name: "www.example.com", Resolves: true, ResolveIPs: []string{"3.3.3.3"}},
+		}},
 		Passive: &PassiveDNSResult{
-			Records: map[string][]string{"example.com": {"1.1.1.1", "9.9.9.9"}},
+			Records: map[string][]string{
+				"example.com":     {"1.1.1.1", "9.9.9.9"},
+				"www.example.com": {"3.3.3.3"},
+			},
 			Timeline: []PDNSTimelineEntry{
 				{Hostname: "example.com", IP: "9.9.9.9",
 					LastSeen: time.Date(2023, 5, 1, 0, 0, 0, 0, time.UTC)},
@@ -102,6 +109,10 @@ func TestAnalyze_OriginCandidate(t *testing.T) {
 	// 当前 IP 不应成为候选
 	if strings.Contains(ev, "1.1.1.1") {
 		t.Errorf("当前解析中的 IP 不应是候选：%v", found.Evidence)
+	}
+	// ⭐ H4：子域当前解析的 IP 也不应是候选（CDN 边缘轮换会常驻不同 IP）
+	if strings.Contains(ev, "3.3.3.3") {
+		t.Errorf("⭐ 子域当前解析 IP 不应是源站候选：%v", found.Evidence)
 	}
 
 	// 无 CDN → 不推断（当前 IP 就是源站）

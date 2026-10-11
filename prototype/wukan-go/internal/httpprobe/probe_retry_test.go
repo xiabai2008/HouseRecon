@@ -138,6 +138,28 @@ func TestProbeURL_NoRetryWhenDisabled(t *testing.T) {
 	}
 }
 
+// ⭐ H1：采集能力开关必须进缓存键 —— 否则"先普通探测（JARM 关）→
+// 缓存写入空 JARM → 再开 --tech-jarm 永远命中旧缓存"的静默失效
+func TestMakeCacheKey_CapsMatter(t *testing.T) {
+	base := MakeCacheKey("https://a.example.com", "", true, "UA", CapabilityKey(false, false, false))
+	withJARM := MakeCacheKey("https://a.example.com", "", true, "UA", CapabilityKey(false, false, true))
+	withH2 := MakeCacheKey("https://a.example.com", "", true, "UA", CapabilityKey(false, true, false))
+	if base == withJARM {
+		t.Error("⭐ GrabJARM 开关不同必须生成不同缓存键")
+	}
+	if base == withH2 {
+		t.Error("⭐ GrabH2 开关不同必须生成不同缓存键")
+	}
+	if withJARM == withH2 {
+		t.Error("不同能力组合的键必须不同")
+	}
+	// 相同能力 → 相同键
+	again := MakeCacheKey("https://a.example.com", "", true, "UA", CapabilityKey(false, false, true))
+	if again != withJARM {
+		t.Error("相同参数应生成相同键")
+	}
+}
+
 // 正常成功不打重试标记
 func TestProbeURL_NoRetryMarkOnSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

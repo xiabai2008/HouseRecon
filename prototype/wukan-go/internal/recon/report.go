@@ -131,7 +131,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 			}
 			for _, e := range f.Evidence {
 				if e != "" {
-					fmt.Fprintf(&b, "- 证据：`%s`\n", mdCell(e))
+					fmt.Fprintf(&b, "- 证据：`%s`\n", mdCode(e))
 				}
 			}
 			fmt.Fprintf(&b, "\n")
@@ -148,7 +148,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 		for _, ch := range rep.Diff.Changes {
 			line := fmt.Sprintf("- %s **[%s] %s**", LevelIcon(ch.Level), ch.Kind, mdCell(ch.Target))
 			if ch.Before != "" || ch.After != "" {
-				line += fmt.Sprintf("（`%s` → `%s`）", mdCell(ch.Before), mdCell(ch.After))
+				line += fmt.Sprintf("（`%s` → `%s`）", mdCode(ch.Before), mdCode(ch.After))
 			}
 			fmt.Fprintf(&b, "%s\n", line)
 			if ch.Detail != "" {
@@ -168,7 +168,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 			fmt.Fprintf(&b, "| 类型 | 值 |\n|---|---|\n")
 			for _, rt := range sortedRecordTypes(rep.DNS.Records) {
 				for _, r := range rep.DNS.Records[rt] {
-					fmt.Fprintf(&b, "| %s | `%s` |\n", r.Type, mdCell(r.Value))
+					fmt.Fprintf(&b, "| %s | `%s` |\n", r.Type, mdCell(mdCode(r.Value)))
 				}
 			}
 			fmt.Fprintf(&b, "\n")
@@ -224,7 +224,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 					fmt.Fprintf(&b, "\n…（还有 %d 个）\n\n", len(subs)-50)
 					break
 				}
-				fmt.Fprintf(&b, "- `%s` → %s\n", mdCell(host), mdCell(strings.Join(rep.Passive.Records[host], ", ")))
+				fmt.Fprintf(&b, "- `%s` → %s\n", mdCode(host), mdCell(strings.Join(rep.Passive.Records[host], ", ")))
 			}
 			fmt.Fprintf(&b, "\n")
 		}
@@ -255,7 +255,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 			}
 			fmt.Fprintf(&b, "| %s | %d | %s | %d | `%s` |\n",
 				mdCell(p.Host), p.Port, mdCell(dashOr(p.Service)), p.Confidence,
-				mdCell(truncateS(p.Banner, 60)))
+				mdCell(mdCode(truncateS(p.Banner, 60))))
 		}
 		fmt.Fprintf(&b, "\n")
 	}
@@ -283,7 +283,7 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 			}
 			fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s | %s |\n",
 				mdCell(truncateS(t.URL, 44)), status, mdCell(dashOr(t.Server)),
-				mdCell(truncateS(t.JARM, 16)),
+				mdCode(truncateS(t.JARM, 16)),
 				mdCell(strings.Join(t.BodyKeywords, "/")), conflict)
 		}
 		fmt.Fprintf(&b, "\n")
@@ -323,6 +323,19 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 		fmt.Fprintf(&b, "\n")
 	}
 
+	// rDNS
+	if len(rep.RDNS) > 0 {
+		fmt.Fprintf(&b, "## rDNS 反查\n\n")
+		fmt.Fprintf(&b, "| IP | PTR |\n|---|---|\n")
+		for _, r := range rep.RDNS {
+			if r == nil || len(r.Hostnames) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "| `%s` | %s |\n", mdCode(r.IP), mdCell(strings.Join(r.Hostnames, ", ")))
+		}
+		fmt.Fprintf(&b, "\n")
+	}
+
 	fmt.Fprintf(&b, "---\n\n")
 	fmt.Fprintf(&b, "*由 %s 生成。%s*\n", reportTool, reportDisclaimer)
 
@@ -333,6 +346,14 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 // mdCell 表格单元格转义（竖线/换行会破坏表格）
 func mdCell(s string) string {
 	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
+// mdCode 代码段内容转义（反引号会截断代码段；换行会破坏行内代码）
+func mdCode(s string) string {
+	s = strings.ReplaceAll(s, "`", "'")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	return s
@@ -507,6 +528,11 @@ footer{margin-top:3rem;color:#888;font-size:.8rem;border-top:1px solid #ddd;padd
 {{if .IPInfo}}<h2>IP 归属</h2>
 <table><tr><th>IP</th><th>归属</th><th>ASN</th><th>ISP</th><th>标签</th></tr>
 {{range .IPInfo}}{{if .}}<tr><td><code>{{.IP}}</code></td><td>{{.CountryCode}}/{{.City}}</td><td>AS{{.ASN}}</td><td>{{.ISP}}</td><td>{{join .Flags "/"}}</td></tr>{{end}}{{end}}
+</table>{{end}}
+
+{{if .RDNS}}<h2>rDNS 反查</h2>
+<table><tr><th>IP</th><th>PTR</th></tr>
+{{range .RDNS}}{{if .}}{{if .Hostnames}}<tr><td><code>{{.IP}}</code></td><td>{{join .Hostnames ", "}}</td></tr>{{end}}{{end}}{{end}}
 </table>{{end}}
 
 <footer>由 {{.Tool}} 生成。{{.Disclaimer}}</footer>

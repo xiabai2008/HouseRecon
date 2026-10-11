@@ -461,11 +461,18 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 			fmt.Fprintln(w, "  （指定端口范围内无开放服务）")
 		} else {
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "  IP\t端口\tRTT\t服务\t置信\tbanner")
+			// ⭐ L3：主机列显示扫描来源 —— 子域批量扫描的结果（Host=子域名）
+			//   必须能看出端口属于哪个子域，而不是只看到 IP
+			fmt.Fprintln(tw, "  主机\tIP\t端口\tRTT\t服务\t置信\tbanner")
 			for _, p := range opens {
-				fmt.Fprintf(tw, "  %s\t%d\t%.1fms\t%s\t%d\t%s\n",
-					p.IP, p.Port, p.RTTMs(), dashIfEmptyStr(p.Service),
-					p.Confidence, dashIfEmptyStr(truncateStr(p.Banner, 44)))
+				host := p.Host
+				if host == "" {
+					host = p.IP
+				}
+				fmt.Fprintf(tw, "  %s\t%s\t%d\t%.1fms\t%s\t%d\t%s\n",
+					truncateStr(host, 32), p.IP, p.Port, p.RTTMs(),
+					dashIfEmptyStr(p.Service),
+					p.Confidence, dashIfEmptyStr(truncateStr(p.Banner, 40)))
 			}
 			tw.Flush()
 		}
@@ -503,8 +510,28 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 		if retried > 0 {
 			fmt.Fprintf(w, "  ↻ %d 个目标经降级重试成功（跳过重定向 / http 回退）\n", retried)
 		}
+		// ⭐ M3：有 JARM/H2 数据时增加"深度指纹"列（否则采集了却看不到）
+		hasJARM, hasH2 := false, false
+		for _, t := range rep.Tech {
+			if t == nil {
+				continue
+			}
+			if t.JARM != "" {
+				hasJARM = true
+			}
+			if t.H2Settings != "" {
+				hasH2 = true
+			}
+		}
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "  URL\t状态\tServer\tTLS\t技术栈\t冲突")
+		header := "  URL\t状态\tServer\tTLS\t技术栈\t冲突"
+		if hasJARM {
+			header += "\tJARM"
+		}
+		if hasH2 {
+			header += "\tH2"
+		}
+		fmt.Fprintln(tw, header)
 		for i, t := range rep.Tech {
 			if t == nil {
 				continue
@@ -525,10 +552,17 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 			if l := t.RetryLabel(); l != "" {
 				u += "（" + l + "）"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
+			line := fmt.Sprintf("  %s\t%s\t%s\t%s\t%s\t%s",
 				u, status,
 				dashIfEmptyStr(t.Server), dashIfEmptyStr(t.TLSVersion),
 				dashIfEmptyStr(strings.Join(t.BodyKeywords, "/")), conflictMark)
+			if hasJARM {
+				line += "\t" + dashIfEmptyStr(truncateStr(t.JARMDisplay(), 16))
+			}
+			if hasH2 {
+				line += "\t" + dashIfEmptyStr(truncateStr(t.H2Settings, 24))
+			}
+			fmt.Fprintln(tw, line)
 		}
 		tw.Flush()
 

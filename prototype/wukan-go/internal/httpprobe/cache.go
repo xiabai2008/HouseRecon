@@ -64,7 +64,11 @@ type TechCache interface {
 //	同时纳入键的还有：
 //	  - 跟随重定向开关（不同设置会得到不同的 FinalURL）
 //	  - UserAgent（部分 WAF 对 UA 返回不同内容）
-func MakeCacheKey(url, hostHeader string, followRedirect bool, ua string) string {
+//	  - caps 采集能力开关（GrabFavicon/GrabH2/GrabJARM）——
+//	    ⭐ 不含它会导致"先普通探测（JARM 关）→ 缓存写入空 JARM →
+//	    再开 --tech-jarm 永远命中旧缓存"的静默失效（审查发现的 H1）。
+//	    升级后旧键自然不命中，缓存自动重建。
+func MakeCacheKey(url, hostHeader string, followRedirect bool, ua string, caps string) string {
 	var b strings.Builder
 	b.WriteString(strings.ToLower(url))
 	b.WriteString("\x00") // 分隔符，避免拼接歧义
@@ -82,6 +86,27 @@ func MakeCacheKey(url, hostHeader string, followRedirect bool, ua string) string
 		}
 		b.WriteString("\x00ua=")
 		b.WriteString(ua)
+	}
+	if caps != "" {
+		b.WriteString("\x00caps=")
+		b.WriteString(caps)
+	}
+	return b.String()
+}
+
+// CapabilityKey 把"影响结果的采集开关"编成缓存键片段
+//
+// 只列会改变 ProbeResult 内容的开关（favicon/H2/JARM 各自贡献字段）。
+func CapabilityKey(grabFavicon, grabH2, grabJARM bool) string {
+	var b strings.Builder
+	if grabFavicon {
+		b.WriteString("f")
+	}
+	if grabH2 {
+		b.WriteString("h")
+	}
+	if grabJARM {
+		b.WriteString("j")
 	}
 	return b.String()
 }

@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,6 +18,21 @@ func mkSnap(target string, mod func(*Snapshot)) *Snapshot {
 	}
 	if mod != nil {
 		mod(s)
+	}
+	// 测试便利：OpenPorts 有而 PortsIPs 空时自动补齐（模拟 BuildSnapshot 行为，
+	// 让 H5 的"扫描集门控"在测试中真实生效）
+	if s.Coverage.Ports && len(s.Coverage.PortsIPs) == 0 {
+		seen := map[string]bool{}
+		for _, p := range s.OpenPorts {
+			k := strings.ToLower(strings.TrimSpace(p.IP))
+			if k == "" {
+				k = strings.ToLower(strings.TrimSpace(p.Host))
+			}
+			if k != "" && !seen[k] {
+				seen[k] = true
+				s.Coverage.PortsIPs = append(s.Coverage.PortsIPs, k)
+			}
+		}
 	}
 	return s
 }
@@ -327,11 +343,16 @@ func TestDiffSnapshots_Levels(t *testing.T) {
 	prev := mkSnap("example.com", func(s *Snapshot) {
 		s.Subdomains = []string{"a.example.com"}
 		s.IPs = []string{"1.2.3.4"}
+		// 共同扫描过的 IP（H5 门控下，端口新增需有共同扫描集）
+		s.OpenPorts = []SnapshotPort{{IP: "1.2.3.4", Port: 443, Service: "https"}}
 	})
 	curr := mkSnap("example.com", func(s *Snapshot) {
 		s.Subdomains = []string{"b.example.com"}
 		s.IPs = []string{"5.6.7.8"}
-		s.OpenPorts = []SnapshotPort{{IP: "1.2.3.4", Port: 3389, Service: "rdp"}}
+		s.OpenPorts = []SnapshotPort{
+			{IP: "1.2.3.4", Port: 443, Service: "https"},
+			{IP: "1.2.3.4", Port: 3389, Service: "rdp"},
+		}
 	})
 	d := DiffSnapshots(prev, curr)
 	want := map[string]string{
@@ -377,11 +398,16 @@ func TestDiffSnapshots_NilSafety(t *testing.T) {
 func TestDiffSnapshots_Ordering(t *testing.T) {
 	prev := mkSnap("example.com", func(s *Snapshot) {
 		s.Subdomains = []string{"old.example.com"}
+		// 共同扫描过的 IP（H5 门控下，端口新增需有共同扫描集）
+		s.OpenPorts = []SnapshotPort{{IP: "1.2.3.4", Port: 443, Service: "https"}}
 		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, Title: "A"}}
 	})
 	curr := mkSnap("example.com", func(s *Snapshot) {
 		s.Subdomains = []string{"new.example.com"}
-		s.OpenPorts = []SnapshotPort{{IP: "1.2.3.4", Port: 6379, Service: "redis"}}
+		s.OpenPorts = []SnapshotPort{
+			{IP: "1.2.3.4", Port: 443, Service: "https"},
+			{IP: "1.2.3.4", Port: 6379, Service: "redis"},
+		}
 		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, Title: "B"}}
 	})
 	d := DiffSnapshots(prev, curr)
@@ -425,7 +451,8 @@ func TestDiffSnapshots_PortIPRotation(t *testing.T) {
 	if ch.Before != "1.1.1.1:443" || ch.After != "2.2.2.2:443" {
 		t.Errorf("Before/After 应记录新旧地址，实际 %q → %q", ch.Before, ch.After)
 	}
-	// 服务不同（443 上 https vs smtp）不是轮换 → 保持高/低分开
+	// 服务不同（443 上 https vs smtp）不是轮换；且两次扫描的 IP 集不重叠
+	// （H5 门控）：纯增删被抑制，只剩"不可比"说明 —— 这是刻意的零假阳性行为
 	prev2 := mkSnap("example.com", func(s *Snapshot) {
 		s.OpenPorts = []SnapshotPort{{IP: "1.1.1.1", Port: 443, Service: "https"}}
 	})
@@ -433,8 +460,11 @@ func TestDiffSnapshots_PortIPRotation(t *testing.T) {
 		s.OpenPorts = []SnapshotPort{{IP: "2.2.2.2", Port: 443, Service: "smtp"}}
 	})
 	d2 := DiffSnapshots(prev2, curr2)
-	if len(findChanges(d2, ChangePortAdded)) != 1 || len(findChanges(d2, ChangePortRemoved)) != 1 {
-		t.Errorf("服务不同不应归并为轮换：%+v", d2.Changes)
+	if len(findChanges(d2, ChangePortAdded)) != 0 || len(findChanges(d2, ChangePortRemoved)) != 0 {
+		t.Errorf("扫描集不重叠时不得报纯增删：%+v", d2.Changes)
+	}
+	if len(findChanges(d2, ChangeCoverageChanged)) != 1 {
+		t.Errorf("应有一条'不可比'说明：%+v", d2.Changes)
 	}
 }
 
@@ -514,6 +544,77 @@ func TestDiffSnapshots_CoverageChangeHasDetail(t *testing.T) {
 	ch := d.Changes[0]
 	if ch.Kind != ChangeCoverageChanged || ch.Detail == "" || ch.Level != "info" {
 		t.Errorf("覆盖率说明不完整：%+v", ch)
+	}
+}
+
+// ⭐ H2：JARM 全零哨兵（探测失败）不得参与 diff
+func TestDiffSnapshots_JARMFailedNoChange(t *testing.T) {
+	zeros := strings.Repeat("0", 62)
+	prev := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, JARM: zeros}}
+	})
+	curr := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200,
+			JARM: "27d40d40d00040d1dc42d43d00041d6183ff1bfae51ebd88d70384363d525c"}}
+	})
+	d := DiffSnapshots(prev, curr)
+	if len(findChanges(d, ChangeTechJARMChanged)) != 0 {
+		t.Errorf("⭐ 全零哨兵（探测失败）不得报 JARM 变化：%+v", d.Changes)
+	}
+}
+
+// ⭐ H5：扫描集漂移时，未共同扫描的 IP 上的端口差异被门控
+func TestDiffSnapshots_PortScanSetGating(t *testing.T) {
+	prev := mkSnap("example.com", func(s *Snapshot) {
+		s.OpenPorts = []SnapshotPort{{IP: "1.1.1.1", Port: 443, Service: "https"}}
+	})
+	curr := mkSnap("example.com", func(s *Snapshot) {
+		// 本次新增了一个被扫描的 IP（选择集漂移）：其上的 3306 不能断言"新暴露"
+		s.OpenPorts = []SnapshotPort{
+			{IP: "1.1.1.1", Port: 443, Service: "https"},
+			{IP: "2.2.2.2", Port: 3306, Service: "mysql"},
+		}
+	})
+	d := DiffSnapshots(prev, curr)
+	if len(findChanges(d, ChangePortAdded)) != 0 {
+		t.Errorf("⭐ 未共同扫描的 IP 不得报端口新增（可能一直开着）：%+v", d.Changes)
+	}
+
+	// 共同扫描的 IP 上出现新端口 → 仍然要报（门控不能过宽）
+	prev2 := mkSnap("example.com", func(s *Snapshot) {
+		s.OpenPorts = []SnapshotPort{{IP: "1.1.1.1", Port: 443, Service: "https"}}
+	})
+	curr2 := mkSnap("example.com", func(s *Snapshot) {
+		s.OpenPorts = []SnapshotPort{
+			{IP: "1.1.1.1", Port: 443, Service: "https"},
+			{IP: "1.1.1.1", Port: 8443, Service: "https-alt"},
+		}
+	})
+	d2 := DiffSnapshots(prev2, curr2)
+	if len(findChanges(d2, ChangePortAdded)) != 1 {
+		t.Errorf("共同扫描 IP 上的新端口仍应报出：%+v", d2.Changes)
+	}
+}
+
+// ⭐ M1：H2 指纹的 WINDOW_UPDATE 采样抖动不产生假变化（只比 SETTINGS 段）
+func TestDiffSnapshots_H2WindowJitter(t *testing.T) {
+	prev := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, H2Settings: "1:65536|"}}
+	})
+	curr := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, H2Settings: "1:65536|15663105"}}
+	})
+	d := DiffSnapshots(prev, curr)
+	if len(findChanges(d, ChangeTechH2Changed)) != 0 {
+		t.Errorf("仅 WINDOW_UPDATE 到达时机不同不得报 H2 变化：%+v", d.Changes)
+	}
+	// SETTINGS 真变化仍要报
+	curr2 := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200, H2Settings: "1:65536;3:100|"}}
+	})
+	d2 := DiffSnapshots(prev, curr2)
+	if len(findChanges(d2, ChangeTechH2Changed)) != 1 {
+		t.Errorf("SETTINGS 真变化应报出：%+v", d2.Changes)
 	}
 }
 

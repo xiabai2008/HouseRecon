@@ -31,16 +31,26 @@ type AssetSpan struct {
 
 // LocalTimeline 本地快照聚合出的资产时间线
 type LocalTimeline struct {
-	Target     string      `json:"target"`
-	Snapshots  int         `json:"snapshots"`
-	From       time.Time   `json:"from"`
-	To         time.Time   `json:"to"`
+	Target    string    `json:"target"`
+	Snapshots int       `json:"snapshots"`
+	From      time.Time `json:"from"`
+	To        time.Time `json:"to"`
+	// Note 数据质量提示（如"最新快照覆盖不完整"）
+	Note       string      `json:"note,omitempty"`
 	IPs        []AssetSpan `json:"ips,omitempty"`
 	Subdomains []AssetSpan `json:"subdomains,omitempty"`
 	Ports      []AssetSpan `json:"ports,omitempty"`
 }
 
 // BuildLocalTimeline 从快照序列（从旧到新）聚合时间线
+//
+// ⭐ H3 修复（审查发现）：Present（是否仍存在）**不能只看最新快照** ——
+//
+//	最新快照可能"没采集"（CT 失败 / 忘了 --ports），直接判缺席会把
+//	成片资产误报成"已消失"。判定基准 = **最近一次覆盖完整**的快照：
+//	- 资产在基准或之后的任何快照中出现 → Present（出现即证明存在）
+//	- 仅出现在基准之前 → 已消失
+//	- 没有任何完整快照时退回最新快照（并在 Note 说明）
 func BuildLocalTimeline(snaps []*Snapshot) *LocalTimeline {
 	// 过滤 nil 后再判断
 	valid := make([]*Snapshot, 0, len(snaps))
@@ -62,7 +72,7 @@ func BuildLocalTimeline(snaps []*Snapshot) *LocalTimeline {
 	subs := map[string]*AssetSpan{}
 	ports := map[string]*AssetSpan{}
 
-	touch := func(m map[string]*AssetSpan, key string, at time.Time, present bool) {
+	touch := func(m map[string]*AssetSpan, key string, at time.Time) {
 		s, ok := m[key]
 		if !ok {
 			s = &AssetSpan{Key: key, FirstSeen: at}
@@ -71,22 +81,59 @@ func BuildLocalTimeline(snaps []*Snapshot) *LocalTimeline {
 		if at.After(s.LastSeen) {
 			s.LastSeen = at
 		}
-		s.Present = present
 		s.Snapshots++
 	}
-
-	for i, snap := range valid {
-		last := i == len(valid)-1
+	for _, snap := range valid {
 		for _, ip := range snap.IPs {
-			touch(ips, ip, snap.TakenAt, last)
+			touch(ips, ip, snap.TakenAt)
 		}
 		for _, sub := range snap.Subdomains {
-			touch(subs, sub, snap.TakenAt, last)
+			touch(subs, sub, snap.TakenAt)
 		}
 		for _, p := range snap.OpenPorts {
-			touch(ports, portKey(p.IP, p.Host, p.Port), snap.TakenAt, last)
+			touch(ports, portKey(p.IP, p.Host, p.Port), snap.TakenAt)
 		}
 	}
+
+	// 每类别的判定基准：最近一次覆盖完整的快照下标（没有则最新）
+	basisIdx := func(complete func(SnapshotCoverage) bool) int {
+		for i := len(valid) - 1; i >= 0; i-- {
+			if complete(valid[i].Coverage) {
+				return i
+			}
+		}
+		return len(valid) - 1
+	}
+	ipBasis := basisIdx(func(c SnapshotCoverage) bool { return c.DNS })
+	subBasis := basisIdx(func(c SnapshotCoverage) bool { return c.SubdomainsOK() })
+	portBasis := basisIdx(func(c SnapshotCoverage) bool { return c.Ports })
+	latest := len(valid) - 1
+	if ipBasis != latest || subBasis != latest || portBasis != latest {
+		tl.Note = "最新快照覆盖不完整（数据源失败或未采集），" +
+			"「存在 / 已消失」以最近一次覆盖完整的快照为准"
+	}
+
+	// Present = 在基准及之后的任何快照中出现过（出现即证明存在）
+	setPresent := func(m map[string]*AssetSpan, basis int, keyOf func(*Snapshot) []string) {
+		seenAfter := map[string]bool{}
+		for i := basis; i < len(valid); i++ {
+			for _, k := range keyOf(valid[i]) {
+				seenAfter[k] = true
+			}
+		}
+		for k, s := range m {
+			s.Present = seenAfter[k]
+		}
+	}
+	setPresent(ips, ipBasis, func(s *Snapshot) []string { return s.IPs })
+	setPresent(subs, subBasis, func(s *Snapshot) []string { return s.Subdomains })
+	setPresent(ports, portBasis, func(s *Snapshot) []string {
+		out := make([]string, 0, len(s.OpenPorts))
+		for _, p := range s.OpenPorts {
+			out = append(out, portKey(p.IP, p.Host, p.Port))
+		}
+		return out
+	})
 
 	tl.IPs = spansSorted(ips)
 	tl.Subdomains = spansSorted(subs)
@@ -118,6 +165,9 @@ func WriteLocalTimeline(w io.Writer, tl *LocalTimeline) {
 	fmt.Fprintf(w, "【资产时间线】%s（基于 %d 个本地快照 | %s → %s）\n",
 		tl.Target, tl.Snapshots,
 		tl.From.Local().Format("2006-01-02"), tl.To.Local().Format("2006-01-02"))
+	if tl.Note != "" {
+		fmt.Fprintf(w, "  ⚠ %s\n", tl.Note)
+	}
 
 	writeSpans := func(title string, spans []AssetSpan, limit int) {
 		if len(spans) == 0 {

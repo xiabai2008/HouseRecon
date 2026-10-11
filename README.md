@@ -50,14 +50,15 @@
 
 ---
 
-## 五个子命令
+## 六个子命令
 
 ```bash
 wukan recon <域名>     # 目标信息卡：DNS/注册信息/证书子域/被动DNS/rDNS/端口/指纹
-wukan tech <URL>       # HTTP 指纹采集 + ⭐冲突检测
+wukan tech <URL>       # HTTP 指纹采集 + ⭐冲突检测（+JARM/H2 深度指纹）
 wukan ports <主机>     # TCP connect 端口扫描
 wukan ipinfo <IP>      # IP 归属批量查询（含 rDNS 反查）
 wukan diff <域名>      # ⭐ 快照对比（变化监控，需先 recon --snapshot）
+wukan timeline <域名>  # ⭐ 本地资产时间线（何时迁移、迁移到哪）
 ```
 
 一条龙：
@@ -68,6 +69,11 @@ wukan recon example.com --ports 80,443 --tech --quic
 # 变化监控：存快照 → 自动对比上次 → 随时离线复查
 wukan recon example.com --snapshot
 wukan diff example.com --since 7d
+wukan timeline example.com
+
+# 交付报告（Markdown / 自包含 HTML，扩展名自动推断）
+wukan recon example.com -o report.md
+wukan recon example.com -o report.html
 ```
 
 ---
@@ -104,6 +110,7 @@ wukan tech -f urls.txt --csv -o out.csv
 | `NO_COLOR=1` / `WUKAN_NO_COLOR=1` | 关闭 ANSI 颜色（遵循 [no-color.org](https://no-color.org/) 约定） |
 | `WUKAN_FORCE_COLOR=1` | 强制彩色 |
 | `WUKAN_HACKERTARGET_KEY` | hackertarget API key（可选）：免费层仅 50 次/天，配置后按套餐提升额度 |
+| `WUKAN_OTX_KEY` | OTX API key（可选）：启用被动 DNS **时间线**（"何时迁移、迁移到哪"）。OTX 已限制匿名访问，免费注册即可 |
 
 启动页与颜色**默认只在终端（TTY）下启用**：输出被重定向或接入管道时自动降级为纯文本，
 保证 `wukan help > doc.txt` 和 `wukan version | awk ...` 拿到的是干净、可解析的输出。
@@ -171,10 +178,18 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 
 单次扫描是一次性的，**基线是复利的**。`--snapshot` 保存每次运行的资产快照并自动与上次对比：
 
-- 新增/消失的子域、解析 IP、开放端口、HTTP 指纹变化 —— 每条都带判读（该做什么）
+- 新增/消失的子域、解析 IP、开放端口、HTTP 指纹变化（含 JARM/H2 指纹）—— 每条都带判读
 - **覆盖门控**：数据源失败或运行参数变化时，差异标记为"不可比"（`coverage_changed`），而不是误报成片"资产消失"
 - **CDN 节点轮换归并**：同一端口随解析 IP 移动归并为低危提示，不冒充"新暴露端口"
 - `wukan diff <域名> [--since 7d]` 离线复查，退出码适配定时监控脚本
+- `wukan timeline <域名>` 从快照历史聚合迁移轨迹（零外部依赖）；配 `WUKAN_OTX_KEY` 还可接入 OTX 的更早历史
+
+### 5. 深度指纹与交付报告
+
+- **JARM TLS 指纹**：与 Salesforce 官方参考实现**逐字符交叉验证**（6 台真实服务器全一致），默认关（每目标 +10 连接）
+- **HTTP/2 SETTINGS 指纹**：1 个连接读取服务器连接参数（Akamai 风格），默认开
+- **报告导出**：`--format markdown / html`（扩展名自动推断）—— HTML 自包含单文件，适合直接交付/存档
+- **favicon 扩展表工具**：`cmd/favicon-collect` 批量采集 + 人工核对清单，产出可直接生效的扩展表
 
 ---
 
@@ -189,10 +204,12 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 | 端口缓存（本地靶场 8 端口） | 冷扫 0.63s → 二次 8/8 全命中 **0.00s**（零连接） |
 | tech 降级重试（本地靶场） | 重定向黑洞 → 跳过重定向拿到 **302**；TLS 失败 → http 回退拿到 **200**（对照组均失败） |
 | 变化监控 E2E | 覆盖率门控：CT 失败时 **0 条假"消失"**；12 连跑 **0 崩溃**（修复前 1/12 并发写 map 崩溃） |
+| JARM 交叉验证 | 与 Salesforce Python 参考实现对 **6 台真实服务器逐字符一致**（github/cloudflare/baidu/qq/bing/example.com） |
+| favicon 工具链验证 | 真实采集复测内置表 **21/21 哈希一致**（另 2 条因网络未采到） |
 | 子域批量指纹的增量价值 | 根域探测发现 **0** 处冲突，子域探测发现 **5** 处 |
 | rDNS | 6 个 IP 中 2 个**无 PTR**（无 PTR 是常态，非异常） |
 | favicon 哈希表 | 23 条，**全部实测**（含 md5 可核对） |
-| 单元测试 | 107 项全过 |
+| 单元测试 | 147 项全过 |
 
 ### 数据源实测结论
 
@@ -273,7 +290,9 @@ filtered/error 是**不确定结论**（超时无法区分"被丢掉的开放端
 4. **端口扫描超时无法区分** "被 DROP 的开放端口"与"不存在的端口"（TCP connect 的固有代价）
 5. **不查被动 DNS 历史解析的完整时间线**（只取当前快照）
 6. **favicon 表覆盖有限**（内置 23 条，且图标天然易碰撞 —— 命中只能作线索，不能作结论）。
-   可通过 `~/.wukan/favicon-extra.json` 覆盖/扩充，无需重编译（⚠️ 数据须实测后填入）
+   可通过 `~/.wukan/favicon-extra.json` 覆盖/扩充，或用 `cmd/favicon-collect` 批量采集（⚠️ 数据须实测/人工核对）
+7. **JARM 默认关闭**（每目标 10 个连接较重）；`--tech-jarm` / `--jarm` 显式开启
+8. **OTX 时间线需要 API key**（免费注册）：无 key 时本地时间线（`wukan timeline`）仍可用
 7. **rDNS 约 1/3 公网 IP 无 PTR**，无法用 rDNS 确认归属时需靠 WHOIS/BGP/台账
 8. **未做真实 CDN 绕过** —— 检测到 CDN 时会报告"扫描结果反映的是边缘节点"，但不自动找源站
 
@@ -305,7 +324,7 @@ filtered/error 是**不确定结论**（超时无法区分"被丢掉的开放端
 
 **HouseRecon** is a lightweight network asset reconnaissance toolkit in Go — **zero third-party dependencies, single binary**.
 
-Five subcommands: `recon` (asset card), `tech` (HTTP fingerprinting + **conflict detection**), `ports` (TCP connect scan), `ipinfo` (IP attribution + rDNS), `diff` (snapshot diff for change monitoring).
+Six subcommands: `recon` (asset card), `tech` (HTTP fingerprinting + **conflict detection** + JARM/H2), `ports` (TCP connect scan), `ipinfo` (IP attribution + rDNS), `diff` (snapshot diff for change monitoring), `timeline` (local asset timeline).
 
 **What sets it apart:**
 
@@ -313,6 +332,7 @@ Five subcommands: `recon` (asset card), `tech` (HTTP fingerprinting + **conflict
 - **Fingerprint conflict matrix** — collects 5 independent fingerprint sources and **cross-validates them**. Existing tools merely concatenate results; contradictions usually point to real issues (CDN origin leaks, certificate misconfiguration, cookies missing security flags).
 - **TCP connect scanning to avoid SYN Proxy false positives** — stateless SYN proxies reply SYN-ACK to *any* SYN, making half-open scanners report 3306/3389/5432 as open. connect scanning requires a completed handshake and is immune.
 - **Change monitoring with baselines** — `recon --snapshot` saves asset snapshots and diffs them against the previous run. **Coverage gating** keeps data-source failures or flag changes from producing false "disappeared" alarms.
+- **JARM cross-validated against the reference implementation** — byte-level port with per-server hash equality verified on real servers. Plus HTTP/2 SETTINGS fingerprinting and self-contained Markdown/HTML reports.
 
 **Authorized use only.** Active scanning features are disabled by default. See [LICENSE](LICENSE).
 

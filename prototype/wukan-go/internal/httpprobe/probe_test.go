@@ -450,28 +450,28 @@ func TestDetectConflicts_NoFalsePositiveOnClean(t *testing.T) {
 // a.example.com 的指纹会被误用到 b.example.com 上 ——
 // 产出「看起来正常但完全错误」的结论。
 func TestMakeCacheKey_HostHeaderMatters(t *testing.T) {
-	k1 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", true, "UA")
-	k2 := MakeCacheKey("http://1.2.3.4:80", "b.example.com", true, "UA")
+	k1 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", true, "UA", "")
+	k2 := MakeCacheKey("http://1.2.3.4:80", "b.example.com", true, "UA", "")
 	if k1 == k2 {
 		t.Errorf("⭐ 不同 Host 头必须生成不同缓存键，但两者都是 %q", k1)
 	}
 	// 同 Host 必须生成相同键
-	k3 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", true, "UA")
+	k3 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", true, "UA", "")
 	if k1 != k3 {
 		t.Errorf("同参数应生成相同缓存键：%q vs %q", k1, k3)
 	}
 	// 大小写不敏感（Host 头本身不区分大小写）
-	k4 := MakeCacheKey("http://1.2.3.4:80", "A.EXAMPLE.COM", true, "UA")
+	k4 := MakeCacheKey("http://1.2.3.4:80", "A.EXAMPLE.COM", true, "UA", "")
 	if k1 != k4 {
 		t.Errorf("Host 头应大小写不敏感：%q vs %q", k1, k4)
 	}
 	// 跟随重定向设置不同 → 键不同
-	k5 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", false, "UA")
+	k5 := MakeCacheKey("http://1.2.3.4:80", "a.example.com", false, "UA", "")
 	if k1 == k5 {
 		t.Error("followRedirect 不同应生成不同缓存键（FinalURL 会不同）")
 	}
 	// URL 不同 → 键不同
-	k6 := MakeCacheKey("http://1.2.3.5:80", "a.example.com", true, "UA")
+	k6 := MakeCacheKey("http://1.2.3.5:80", "a.example.com", true, "UA", "")
 	if k1 == k6 {
 		t.Error("URL 不同应生成不同缓存键")
 	}

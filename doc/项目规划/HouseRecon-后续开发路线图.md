@@ -33,7 +33,7 @@ go build -o wukan.exe ./cmd/wukan
 # ③ 冒烟测试：应看到 ASCII 启动页
 ./wukan.exe help
 
-# ④ 单元测试：应 107 项全过
+# ④ 单元测试：应 147 项全过
 go test ./...
 # 期望输出：ok  github.com/wukan/wukan/internal/httpprobe
 #           ok  github.com/wukan/wukan/internal/ipinfo
@@ -186,26 +186,30 @@ cd prototype/wukan-go
 | # | 任务 | 说明 |
 |---|---|---|
 | P1-1 | ✅ **多目标 diff（变化监控）**（已完成 2026-10-11：`recon --snapshot` + `wukan diff [--since]`；⭐覆盖门控防假"消失"、CDN 轮换归并、目标归一化统一；审查后修复并发写 map 崩溃） | 保存上次结果，对比报告"新增/消失的子域、端口、指纹变化"。配合定时任务做资产监控 |
-| P1-2 | **子域批量端口扫描** | 现在 `--ports` 只扫根域 IP；应对存活子域也扫（注意量级控制） |
-| P1-3 | **指纹源扩充** | 现有 5 路。可加：JARM 指纹、HTTP/2 SETTINGS 指纹、TLS 扩展顺序（JA3） |
-| P1-4 | **报告导出（Markdown/HTML）** | 现在只有 table/json/hosts/subs。加一个适合直接交付/存档的格式 |
+| P1-2 | ✅ **子域批量端口扫描**（已完成 2026-10-12：`--ports-sub-max` 默认 10，0=关闭；子域用自己域名作 Host；tech 目标选择防串味） | 现在 `--ports` 只扫根域 IP；应对存活子域也扫（注意量级控制） |
+| P1-3 | ✅ **指纹源扩充**（已完成 2026-10-12：JARM 与官方参考实现**逐字符交叉验证 6/6**；HTTP/2 SETTINGS 指纹；快照/差异集成。JA3 为客户端指纹，服务端场景不适用，以 JARM+JA3 同源的 ServerHello 解析覆盖） | 现有 5 路。可加：JARM 指纹、HTTP/2 SETTINGS 指纹、TLS 扩展顺序（JA3） |
+| P1-4 | ✅ **报告导出（Markdown/HTML）**（已完成 2026-10-12：`--format markdown/html`，HTML 自包含单文件、XSS 转义有测试固化） | 现在只有 table/json/hosts/subs。加一个适合直接交付/存档的格式 |
 
 ### 🟢 P2 —— 探索性
 
 | # | 任务 | 说明 |
 |---|---|---|
-| P2-1 | **被动 DNS 完整时间线** | 现在只取快照。完整时间线能看出"何时迁移、迁移到哪" |
-| P2-2 | **CDN 真实源站探测** | 现在检测到 CDN 只提示"结果反映边缘节点"，不自动找源站。可加：历史 DNS + rDNS + 证书历史交叉推断 |
-| P2-3 | **favicon 表规模化采集** | 现在 23 条手工实测。可写个采集脚本批量抓取 + 自动生成表（**仍需人工校验**） |
-| P2-4 | **QUIC 与其他模块联动** | QUIC 探活目前独立，可把结果并入 recon 的发现分析 |
+| P2-1 | ✅ **被动 DNS 完整时间线**（已完成 2026-10-12：OTX 时间线（`WUKAN_OTX_KEY`）+ **本地快照时间线** `wukan timeline`（零依赖）；pdn_migration 发现） | 现在只取快照。完整时间线能看出"何时迁移、迁移到哪" |
+| P2-2 | ✅ **CDN 真实源站探测**（已完成 2026-10-12：全被动推断 `origin_candidate`——历史解析 IP + 反向 IP + 时间线交叉；判读含"不要探测归属不明 IP"合规红线） | 现在检测到 CDN 只提示"结果反映边缘节点"，不自动找源站。可加：历史 DNS + rDNS + 证书历史交叉推断 |
+| P2-3 | ✅ **favicon 表规模化采集**（已完成 2026-10-12：`cmd/favicon-collect` + seeds.txt；E2E 复测内置表 **21/21 一致**；产出 P0-2 兼容扩展表 + 人工核对清单） | 现在 23 条手工实测。可写个采集脚本批量抓取 + 自动生成表（**仍需人工校验**） |
+| P2-4 | ✅ **QUIC 与其他模块联动**（已完成 2026-10-12：quic_only/quic_alive 已并入发现；新增 **Alt-Svc 声明 × QUIC 实际**交叉验证——配置漂移检测，判读含"UDP 路径阻断"严谨说明） | QUIC 探活目前独立，可把结果并入 recon 的发现分析 |
 
 ### 优先级建议
 
 ```
-✅ P0-1 + P0-2  已完成（2026-10-10）
-✅ P0-3 + P0-4  已完成（2026-10-11）
-✅ P1-1         已完成（2026-10-11，经代码审查加固）
-▶ 下一步：P1-2 子域批量端口扫描 / P1-3 指纹源扩充 / P1-4 报告导出（按需）
+✅ 路线图全部完成：
+   P0-1..P0-4（2026-10-10 ~ 10-11）
+   P1-1..P1-4（2026-10-11 ~ 10-12）
+   P2-1..P2-4（2026-10-12）
+▶ 后续可选（超出本路线图）：
+   · 定时任务封装（Windows 任务计划 / cron 一键脚本）
+   · CT 源 key 支持（certspotter 自备 key）
+   · Web 控制台（技术方案 P2 阶段）与报告模板定制
 ```
 
 ---
@@ -216,7 +220,7 @@ cd prototype/wukan-go
 |---|---|---|
 | 1 | **CT 源配额紧**（certspotter 100 次/小时） | 大量目标需分批或自备 key |
 | 2 | **被动 DNS 配额 50 次/天**（hackertarget） | ✅ 已加 key 支持（`WUKAN_HACKERTARGET_KEY`），批量场景可提升额度 |
-| 3 | **favicon 表仅 23 条** | 命中率有限，且图标天然易碰撞 |
+| 3 | **favicon 表仅 23 条** | ✅ 已提供规模化采集工具（`cmd/favicon-collect`）+ 外部扩展表机制；图标天然易碰撞，命中仍只作线索 |
 | 4 | **子域"存活"只验 DNS 解析** | 有泛域名时几乎全"存活"，需 HTTP 确认 |
 | 5 | **端口扫描无法区分 filtered 与 closed-for-open** | TCP connect 的固有代价，已在输出中说明 |
 | 6 | **`--tech` 单次最多 20 目标**（含子域） | 大目标需调 `--tech-max`，但请求量会上去 |
@@ -235,6 +239,7 @@ cd prototype/wukan-go
 | `api.hackertarget.com` | 被动 DNS / IP 反查 | **50 次/天** | 可配 `WUKAN_HACKERTARGET_KEY` 提升额度 |
 | `ipwho.is` | IP 归属（主） | 10000 次/月 | — |
 | `ip-api.com` | IP 归属（补 hosting/proxy） | 45 次/分钟 | 判定可能误报，已分开归类 |
+| `otx.alienvault.com` | 被动 DNS **时间线** | 需 key | ⚠️ 已限制匿名访问；`WUKAN_OTX_KEY`（免费注册）；无 key 时用本地快照时间线 |
 
 **降级链路**：缓存 → certspotter → crt.sh。全失败时**不崩溃不静默**，明确报告原因。
 
@@ -248,7 +253,7 @@ cd prototype/wukan-go
 cd prototype/wukan-go
 gofmt -l .                  # 应为空
 go vet ./...                # 应无输出
-go test ./...               # 应 107 项全过（新增功能需补测试）
+go test ./...               # 应 147 项全过（新增功能需补测试）
 go build -o wukan.exe ./cmd/wukan
 ```
 

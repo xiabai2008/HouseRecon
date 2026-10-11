@@ -55,7 +55,10 @@ type SnapshotCoverage struct {
 	Passive   bool   `json:"passive"`
 	Ports     bool   `json:"ports"`
 	PortsSpec string `json:"ports_spec,omitempty"`
-	Tech      bool   `json:"tech"`
+	// PortsIPs 本次实际扫描过的主机集合（排序）—— H5：diff 只对比
+	// 两次都扫过的 IP，避免"子域选择集/解析 IP 漂移"产出假"新暴露端口"
+	PortsIPs []string `json:"ports_ips,omitempty"`
+	Tech     bool     `json:"tech"`
 }
 
 // SubdomainsOK 子域数据是否完整（CT 与被动 DNS 都必须成功 ——
@@ -130,6 +133,21 @@ func BuildSnapshot(rep *Report) *Snapshot {
 	if len(rep.Ports) > 0 {
 		snap.Coverage.Ports = true
 		snap.Coverage.PortsSpec = rep.PortsSpec
+		// ⭐ H5：记录本次实际扫描的主机集合（diff 据此只对比共同扫过的 IP）
+		ipSet := map[string]bool{}
+		for _, p := range rep.Ports {
+			k := strings.ToLower(strings.TrimSpace(p.IP))
+			if k == "" {
+				k = strings.ToLower(strings.TrimSpace(p.Host))
+			}
+			if k != "" {
+				ipSet[k] = true
+			}
+		}
+		for k := range ipSet {
+			snap.Coverage.PortsIPs = append(snap.Coverage.PortsIPs, k)
+		}
+		sort.Strings(snap.Coverage.PortsIPs)
 	}
 	if len(rep.Tech) > 0 {
 		snap.Coverage.Tech = true
@@ -219,11 +237,17 @@ func BuildSnapshot(rep *Report) *Snapshot {
 			if t.Err != "" {
 				status = 0
 			}
+			// ⭐ H2 修复：JARM 全 0 是"探测失败"哨兵而非指纹，
+			//   归一化为空（"未采集"语义）—— 与 diff 的"单侧为空不比"天然契合
+			jarm := t.JARM
+			if t.JARMFailed() {
+				jarm = ""
+			}
 			snap.Tech = append(snap.Tech, SnapshotTech{
 				URL: u, Status: status,
 				Server: t.Server, Title: t.Title,
 				FaviconProduct: t.FaviconProductName,
-				JARM:           t.JARM,
+				JARM:           jarm,
 				H2Settings:     t.H2Settings,
 			})
 		}
