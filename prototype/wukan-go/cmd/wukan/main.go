@@ -764,6 +764,8 @@ type reconFlags struct {
 	techCacheStats bool
 	techCacheClear bool
 	noTechRetry    bool
+	techJARM       bool
+	techNoH2       bool
 	noRdns         bool
 	rdnsMax        int
 	noIPInfo       bool
@@ -825,6 +827,9 @@ func runRecon(args []string) {
 	opt.TechNoFavicon = f.techNoFav
 	// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
 	opt.TechRetryFallback = !f.noTechRetry
+	// ⭐ 指纹源扩充（P1-3）：JARM 默认关（重），H2 SETTINGS 默认开（轻）
+	opt.TechJARM = f.techJARM
+	opt.TechNoH2 = f.techNoH2
 	// ⭐ 子域批量探测默认开启（覆盖整个攻击面）
 	opt.TechSubdomains = !f.noTechSub
 	if f.techMax > 0 {
@@ -1208,6 +1213,10 @@ func parseReconFlags(args []string) *reconFlags {
 			f.techCacheClear = true
 		case "--no-tech-retry":
 			f.noTechRetry = true
+		case "--tech-jarm":
+			f.techJARM = true
+		case "--tech-no-h2":
+			f.techNoH2 = true
 		case "--no-rdns":
 			f.noRdns = true
 		case "--rdns-max":
@@ -1303,6 +1312,8 @@ func printReconUsage() {
       --tech-sub-max <n> 最多探测多少个子域（默认 15）
       --no-tech-sub     只探根域，不探子域
       --no-tech-retry   失败目标不降级重试（默认开启：跳过重定向 / http 回退）
+      --tech-jarm       ⭐ 采集 JARM TLS 指纹（P1-3；每目标 +10 个连接，默认关）
+      --tech-no-h2      不采集 HTTP/2 SETTINGS 指纹（P1-3，默认采集）
       --no-tech-cache   不用 tech 指纹缓存（强制重新探测）
       --tech-cache-stats  查看 tech 缓存统计后退出
       --tech-cache-clear  清空 tech 缓存后退出
@@ -1799,6 +1810,8 @@ type techFlags struct {
 	noFollow      bool
 	noFavicon     bool
 	noRetry       bool
+	jarm          bool
+	noH2          bool
 	onlyConflicts bool
 	quiet         bool
 }
@@ -1825,6 +1838,9 @@ func runTech(args []string) {
 	cfg.GrabFavicon = !f.noFavicon
 	// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
 	cfg.RetryFallback = !f.noRetry
+	// ⭐ 指纹源扩充（P1-3）
+	cfg.GrabJARM = f.jarm
+	cfg.GrabH2 = !f.noH2
 
 	if !f.quiet {
 		fmt.Fprintf(os.Stderr, "[%s] ⚠ 主动探测 %d 个 URL | 并发 %d | 超时 %ds\n",
@@ -2072,6 +2088,10 @@ func parseTechFlags(args []string) *techFlags {
 			f.noFavicon = true
 		case "--no-retry":
 			f.noRetry = true
+		case "--jarm":
+			f.jarm = true
+		case "--no-h2":
+			f.noH2 = true
 		case "-q", "--quiet":
 			f.quiet = true
 		}
@@ -2166,6 +2186,8 @@ func printTechUsage() {
       --no-follow        不跟随重定向
       --no-favicon       不抓 favicon（更快）
       --no-retry         失败目标不降级重试（默认开启：跳过重定向 / http 回退）
+      --jarm             采集 JARM TLS 指纹（P1-3；每目标 +10 个连接，较慢）
+      --no-h2            不采集 HTTP/2 SETTINGS 指纹（P1-3，默认采集）
   -q, --quiet           只输出结果
   -h, --help            显示本帮助
 

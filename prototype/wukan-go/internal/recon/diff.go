@@ -36,6 +36,8 @@ const (
 	ChangeTechServerChanged  = "tech_server_changed"
 	ChangeTechFaviconChanged = "tech_favicon_changed"
 	ChangeTechTitleChanged   = "tech_title_changed"
+	ChangeTechJARMChanged    = "tech_jarm_changed"
+	ChangeTechH2Changed      = "tech_h2_changed"
 	ChangeCoverageChanged    = "coverage_changed"
 )
 
@@ -325,6 +327,18 @@ func diffTech(prev, curr *Snapshot, d *SnapshotDiff) {
 			ch.After = truncateS(ct.Title, 40)
 			d.Changes = append(d.Changes, ch)
 		}
+		if pt.JARM != "" && ct.JARM != "" && pt.JARM != ct.JARM {
+			ch := changeFor(ChangeTechJARMChanged, url)
+			ch.Before = pt.JARM
+			ch.After = ct.JARM
+			d.Changes = append(d.Changes, ch)
+		}
+		if pt.H2Settings != "" && ct.H2Settings != "" && pt.H2Settings != ct.H2Settings {
+			ch := changeFor(ChangeTechH2Changed, url)
+			ch.Before = truncateS(pt.H2Settings, 40)
+			ch.After = truncateS(ct.H2Settings, 40)
+			d.Changes = append(d.Changes, ch)
+		}
 	}
 }
 
@@ -389,6 +403,13 @@ func changeFor(kind, target string) Change {
 	case ChangeTechTitleChanged:
 		c.Level = "info"
 		c.Detail = "页面标题变化（改版或内容调整）。"
+	case ChangeTechJARMChanged:
+		c.Level = "medium"
+		c.Detail = "JARM TLS 指纹变化 —— 服务端 TLS 栈的实现特征改变了（换服务器/换 TLS 库/重大升级）。" +
+			"这是高价值信号：确认是否为计划内变更；若非计划内，留意后端替换或中间设备变更。"
+	case ChangeTechH2Changed:
+		c.Level = "low"
+		c.Detail = "HTTP/2 SETTINGS 指纹变化（服务器软件升级或连接参数调整）。"
 	case ChangeCoverageChanged:
 		// Detail/Before/After 由调用方（coverageChange / spec 变化）填充
 		c.Level = "info"

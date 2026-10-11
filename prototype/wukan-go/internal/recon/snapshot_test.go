@@ -38,7 +38,9 @@ func TestBuildSnapshot_Extraction(t *testing.T) {
 		},
 		PortsSpec: "top100",
 		Tech: []*httpprobe.ProbeResult{
-			{URL: "https://example.com", StatusCode: 200, Server: "nginx"},
+			{URL: "https://example.com", StatusCode: 200, Server: "nginx",
+				JARM:       "27d40d40d00040d1dc42d43d00041d6183ff1bfae51ebd88d70384363d525c",
+				H2Settings: "1:65536|15663105"},
 			{URL: "https://dead.example.com", Err: "timeout"}, // 失败也要记录（Status=0）
 			nil, // 防御
 		},
@@ -84,6 +86,10 @@ func TestBuildSnapshot_Extraction(t *testing.T) {
 	}
 	if snap.Tech[1].URL != "https://example.com" || snap.Tech[1].Server != "nginx" {
 		t.Errorf("tech 解析错误：%+v", snap.Tech[1])
+	}
+	// P1-3：JARM / H2 指纹也要进快照
+	if snap.Tech[1].JARM == "" || snap.Tech[1].H2Settings == "" {
+		t.Errorf("快照应包含 JARM/H2 指纹：%+v", snap.Tech[1])
 	}
 }
 

@@ -223,6 +223,51 @@ func TestDiffSnapshots_TechAddRemove_Suppressed(t *testing.T) {
 	}
 }
 
+// ⭐ P1-3：JARM / H2 SETTINGS 变化检测（双方非空才比 —— 零假阳性）
+func TestDiffSnapshots_TechJARMAndH2(t *testing.T) {
+	prev := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{
+			URL: "https://a.example.com", Status: 200,
+			JARM:       "27d40d40d00040d1dc42d43d00041d6183ff1bfae51ebd88d70384363d525c",
+			H2Settings: "1:65536;4:6291456|15663105",
+		}}
+	})
+	curr := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{
+			URL: "https://a.example.com", Status: 200,
+			JARM:       "29d1fb00029d29d1fc29d1fb1fb29d46f0ca2446873e81c43869f3dca73bff",
+			H2Settings: "2:0;3:100;4:2097152|0",
+		}}
+	})
+	d := DiffSnapshots(prev, curr)
+	jarm := findChanges(d, ChangeTechJARMChanged)
+	h2 := findChanges(d, ChangeTechH2Changed)
+	if len(jarm) != 1 || jarm[0].Level != "medium" {
+		t.Errorf("应报 1 条 tech_jarm_changed(medium)，实际 %+v", jarm)
+	}
+	if len(h2) != 1 || h2[0].Level != "low" {
+		t.Errorf("应报 1 条 tech_h2_changed(low)，实际 %+v", h2)
+	}
+	if jarm[0].Before == "" || jarm[0].After == "" {
+		t.Error("JARM 变化应带 Before/After")
+	}
+
+	// 单侧为空（未采集）→ 不报
+	prev2 := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{URL: "https://a.example.com", Status: 200}}
+	})
+	curr2 := mkSnap("example.com", func(s *Snapshot) {
+		s.Tech = []SnapshotTech{{
+			URL: "https://a.example.com", Status: 200,
+			JARM: "27d40d40d00040d1dc42d43d00041d6183ff1bfae51ebd88d70384363d525c",
+		}}
+	})
+	d2 := DiffSnapshots(prev2, curr2)
+	if len(findChanges(d2, ChangeTechJARMChanged)) != 0 {
+		t.Errorf("单侧未采集 JARM 不应报变化：%+v", d2.Changes)
+	}
+}
+
 // 完全一致 → 空 diff（顺序不同也算一致）
 func TestDiffSnapshots_NoChanges(t *testing.T) {
 	mk := func() *Snapshot {

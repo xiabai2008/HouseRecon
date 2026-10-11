@@ -134,6 +134,10 @@ type Options struct {
 	// ⭐ 实测有 4 个子域"重定向后超时"，降级重试能把它们从"探测失败"
 	//   变成"可分析的结果"（原始 301/302 本身就有指纹价值）。
 	TechRetryFallback bool
+	// TechJARM 是否采集 JARM TLS 指纹（P1-3；每目标 +10 个连接，默认关）
+	TechJARM bool
+	// TechNoH2 不采集 HTTP/2 SETTINGS 指纹（默认采集，仅 1 个连接；P1-3）
+	TechNoH2 bool
 	// TechSubdomains ⭐ 是否对发现的存活子域也做指纹探测
 	//
 	// 这是"覆盖整个攻击面"的关键 —— 子域往往跑着不同的应用、
@@ -191,6 +195,9 @@ func DefaultOptions() Options {
 		TechMaxTargets:  20,
 		// ⭐ 失败目标降级重试（跳过重定向 / http 回退），默认开启
 		TechRetryFallback: true,
+		// ⭐ JARM 默认关（重）；H2 SETTINGS 默认开（轻）
+		TechJARM: false,
+		TechNoH2: false,
 		// ⭐ 子域探测默认开启 —— 这是"覆盖整个攻击面"的关键
 		TechSubdomains:  true,
 		TechSubMax:      15,
@@ -1962,6 +1969,8 @@ func (r *Runner) probeTechTargets(targets []techTarget) []*httpprobe.ProbeResult
 			tcfg.Concurrency = r.opt.TechConcurrency
 			tcfg.GrabFavicon = !r.opt.TechNoFavicon
 			tcfg.RetryFallback = r.opt.TechRetryFallback // ⭐ 失败降级重试
+			tcfg.GrabJARM = r.opt.TechJARM               // ⭐ JARM（P1-3，默认关）
+			tcfg.GrabH2 = !r.opt.TechNoH2                // ⭐ H2 SETTINGS（P1-3，默认开）
 			tcfg.HostHeader = h                          // ⭐ 本组统一的 Host 头
 			tcfg.Cache = r.opt.TechCache                 // ⭐ 传入缓存
 

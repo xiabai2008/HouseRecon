@@ -96,6 +96,10 @@ type SnapshotTech struct {
 	Server         string `json:"server,omitempty"`
 	Title          string `json:"title,omitempty"`
 	FaviconProduct string `json:"favicon_product,omitempty"`
+	// JARM TLS 指纹（62 字符；未采集为空；P1-3）
+	JARM string `json:"jarm,omitempty"`
+	// H2Settings HTTP/2 SETTINGS 指纹（未采集为空；P1-3）
+	H2Settings string `json:"h2_settings,omitempty"`
 }
 
 // BuildSnapshot 从 recon 报告提取资产快照
@@ -219,6 +223,8 @@ func BuildSnapshot(rep *Report) *Snapshot {
 				URL: u, Status: status,
 				Server: t.Server, Title: t.Title,
 				FaviconProduct: t.FaviconProductName,
+				JARM:           t.JARM,
+				H2Settings:     t.H2Settings,
 			})
 		}
 		sort.Slice(snap.Tech, func(i, j int) bool { return snap.Tech[i].URL < snap.Tech[j].URL })

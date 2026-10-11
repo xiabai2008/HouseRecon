@@ -52,8 +52,12 @@ type ProbeResult struct {
 	// AltSvc Alt-Svc 响应头：声明可用的替代服务（如 h3=":443"）
 	//
 	// ⭐ 与 QUIC 探活交叉验证：声明了 h3 但 UDP/443 无响应 = 配置漂移线索
-	AltSvc       string            `json:"alt_svc,omitempty"`
-	SetCookies   []string          `json:"set_cookies,omitempty"`
+	AltSvc     string   `json:"alt_svc,omitempty"`
+	SetCookies []string `json:"set_cookies,omitempty"`
+	// JARM JARM TLS 指纹（62 字符；GrabJARM 开启时填充；P1-3）
+	JARM string `json:"jarm,omitempty"`
+	// H2Settings HTTP/2 SETTINGS 指纹（"settings|window_update"；P1-3）
+	H2Settings   string            `json:"h2_settings,omitempty"`
 	CFHeaders    map[string]string `json:"cf_headers,omitempty"`  // Cloudflare 特征
 	CDNHeaders   map[string]string `json:"cdn_headers,omitempty"` // 其他 CDN 特征
 	SecurityHdrs map[string]string `json:"security_headers,omitempty"`
@@ -137,6 +141,10 @@ type Config struct {
 	GrabTLS bool
 	// GrabFavicon 抓 favicon（每个 URL 多一次请求）
 	GrabFavicon bool
+	// GrabH2 HTTP/2 SETTINGS 指纹（每个 https 目标多一次连接，默认开）
+	GrabH2 bool
+	// GrabJARM JARM TLS 指纹（每个 https 目标多 10 次连接，默认关 —— 重）
+	GrabJARM bool
 	// GrabCert 单独抓证书（不依赖 HTTP 请求成功）
 	GrabCert bool
 	// UserAgent UA
@@ -164,7 +172,11 @@ func DefaultConfig() Config {
 		MaxBodySize:   512 * 1024,
 		GrabTLS:       true,
 		GrabFavicon:   true,
-		GrabCert:      true,
+		// ⭐ HTTP/2 SETTINGS 指纹：1 个连接，默认开（P1-3）
+		GrabH2: true,
+		// ⭐ JARM：10 个连接，默认关（重；用 --jarm / --tech-jarm 显式开启）
+		GrabJARM: false,
+		GrabCert: true,
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 			"(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
 	}
@@ -226,7 +238,8 @@ func New(cfg Config) *Prober {
 // ⭐ 探测失败时的降级重试见 retryFallback（由 Config.RetryFallback 控制）。
 func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 	// 解析失败：不重试、不写负缓存（负缓存只针对真实网络失败）
-	if _, err := parseURL(rawURL); err != nil {
+	u, err := parseURL(rawURL)
+	if err != nil {
 		r := newProbeResult(rawURL)
 		r.Err = err.Error()
 		return r
@@ -249,11 +262,56 @@ func (p *Prober) ProbeURL(rawURL string) *ProbeResult {
 		r = p.retryFallback(rawURL, r)
 	}
 
+	// ⭐ P1-3 附加指纹（仅成功的 https 探测才跑）：
+	//   - 失败目标不可达 → 多打 10+ 连接纯属浪费
+	//   - 降级到 http 的结果 → TLS 指纹对象已不存在
+	//   - SNI 用 HostHeader（CDN/vhost 场景 IP 直连必须送域名，
+	//     否则指纹反映的是默认站点 —— 项目的核心教训）
+	if r.Err == "" && u.scheme() == "https" && r.RetriedWith != "http" {
+		sni := u.hostname()
+		if p.cfg.HostHeader != "" {
+			sni = p.cfg.HostHeader
+		}
+		if p.cfg.GrabH2 && r.H2Settings == "" {
+			r.H2Settings = H2Fingerprint(u.hostname(), u.port(), sni, capTimeout(p.cfg.Timeout, 5*time.Second))
+		}
+		if p.cfg.GrabJARM && r.JARM == "" {
+			r.JARM = JARMFingerprint(u.hostname(), u.port(), sni, jarmProbeBudget(p.cfg.Timeout))
+		}
+	}
+
 	// ⭐ 写缓存（失败结果由 Cache.Put 内部过滤）
 	if p.cfg.Cache != nil {
 		p.cfg.Cache.Put(cacheKey, r)
 	}
 	return r
+}
+
+// capTimeout 取 min(t, cap)
+func capTimeout(t, cap time.Duration) time.Duration {
+	if t <= 0 || t > cap {
+		return cap
+	}
+	return t
+}
+
+// jarmProbeBudget JARM 的单探测超时预算
+//
+// ⭐ 交叉验证实测（2026-10-11，example.com/Cloudflare）：
+//
+//	TLS_1.1 探测耗时 **5.68s**（边缘对老版本握手有延迟策略），
+//	4s 上限会把这类服务器误判成全零 —— 而参考实现用 20s。
+//	JARM 是"忠实对齐生态指纹库"的采集，宁可慢不可偏：
+//	预算 = max(cfg.Timeout, 10s)，上限 20s（与参考实现一致）。
+func jarmProbeBudget(cfgTimeout time.Duration) time.Duration {
+	budget := cfgTimeout
+	if budget < 10*time.Second {
+		budget = 10 * time.Second
+	}
+	if budget > 20*time.Second {
+		budget = 20 * time.Second
+	}
+	return budget
 }
 
 // retryFallback 探测失败后的降级重试（最多 2 次额外请求）
