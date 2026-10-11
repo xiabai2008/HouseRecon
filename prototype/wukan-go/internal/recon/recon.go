@@ -50,12 +50,16 @@ type Report struct {
 	IPInfo []*ipinfo.Info `json:"ip_info,omitempty"`
 	// Findings ⭐ 自动发现的可行动项
 	Findings []Finding `json:"findings,omitempty"`
+	// Diff ⭐ 与上次快照的差异（--snapshot 且存在历史快照时填充）
+	Diff *SnapshotDiff `json:"snapshot_diff,omitempty"`
 	// Timing 各阶段耗时
 	Timing map[string]string `json:"timing,omitempty"`
 	// Total 总耗时
 	Total string `json:"total_elapsed,omitempty"`
 	// PortsErr 端口扫描参数错误（如全端口被拒）
 	PortsErr string `json:"ports_error,omitempty"`
+	// PortsSpec 本次端口扫描的参数（快照覆盖率判定：参数不同则端口差异不可比）
+	PortsSpec string `json:"ports_spec,omitempty"`
 	// TechErr 指纹采集未执行的原因
 	TechErr string `json:"tech_error,omitempty"`
 }
@@ -233,21 +237,26 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 	rep.Timing["dns"] = time.Since(t0).String()
 
 	// 阶段 2 & 3 & 3b：RDAP / CT / 被动DNS 并行（都是网络 IO，互不依赖）
+	//
+	// ⭐ 各 goroutine 只写**自己的局部变量**，wg.Wait() 后统一写入 rep.Timing ——
+	//   此前三处直接写同一个 map，实测约 1/12 概率触发
+	//   "fatal error: concurrent map writes" 直接崩进程（审查发现的真实崩溃）。
 	var wg sync.WaitGroup
+	var tRDAP, tCT, tPassive string
 	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
 		t := time.Now()
 		rep.Domain = LookupDomain(ctx, domain, r.opt.RDAP)
-		rep.Timing["rdap"] = time.Since(t).String()
+		tRDAP = time.Since(t).String()
 	}()
 
 	go func() {
 		defer wg.Done()
 		t := time.Now()
 		rep.CT = CollectSubdomains(ctx, domain, r.opt.CT)
-		rep.Timing["ct"] = time.Since(t).String()
+		tCT = time.Since(t).String()
 	}()
 
 	go func() {
@@ -258,10 +267,13 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 			opt.Cache = r.PassiveCache
 		}
 		rep.Passive = CollectPassive(ctx, domain, opt)
-		rep.Timing["passive_dns"] = time.Since(t).String()
+		tPassive = time.Since(t).String()
 	}()
 
 	wg.Wait()
+	rep.Timing["rdap"] = tRDAP
+	rep.Timing["ct"] = tCT
+	rep.Timing["passive_dns"] = tPassive
 
 	// 阶段 3c：IP 反查同源资产（用被动 DNS 拿到的历史 IP）
 	//
@@ -346,6 +358,7 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 	//   所以端口必须显式指定（不可全端口），且限速更保守（默认 100/s）。
 	if r.opt.PortsScan && rep.DNS != nil && len(rep.DNS.IPs) > 0 {
 		t := time.Now()
+		rep.PortsSpec = r.opt.PortsSpec
 		spec, err := portscan.ParsePorts(r.opt.PortsSpec)
 		if err != nil {
 			rep.Ports = nil
@@ -421,7 +434,22 @@ func (r *Runner) lookupIPInfo(ips []string) []*ipinfo.Info {
 }
 
 // normalizeDomain 规范化域名（去协议、去路径、去通配符）
-func normalizeDomain(s string) string {
+//
+// ⭐ 保留旧名作为别名 —— 快照/差异模块统一走 NormalizeTarget，
+//
+//	避免"recon 归一化了、diff 没归一化"的口径不一致（审查发现的真实问题：
+//	`recon https://example.com --snapshot` 写入 example.com.json 后，
+//	`diff https://example.com` 找不到快照）。
+func normalizeDomain(s string) string { return NormalizeTarget(s) }
+
+// NormalizeTarget 规范化目标（去协议、去路径、去通配符、小写、去尾点）
+//
+// ⭐ 必须**幂等**（normalize(normalize(x)) == normalize(x)）：
+//
+//	存储层会二次调用（SaveAndPrevious → snapshotPath），不幂等时
+//	像 "../evil/../x"（第一次归一化成 "."，第二次成 ""）会产生
+//	静默的文件名漂移。尾点用 TrimRight 一次去净。
+func NormalizeTarget(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	for _, p := range []string{"https://", "http://"} {
 		s = strings.TrimPrefix(s, p)
@@ -430,7 +458,7 @@ func normalizeDomain(s string) string {
 		s = s[:i]
 	}
 	s = strings.TrimPrefix(s, "*.")
-	return strings.TrimSuffix(s, ".")
+	return strings.TrimRight(s, ".")
 }
 
 // ── 分析：自动发现可行动项 ─────────────────────────────────

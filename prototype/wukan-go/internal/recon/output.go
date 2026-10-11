@@ -65,6 +65,12 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 		}
 	}
 
+	// ── 与上次快照的差异（变化监控，--snapshot 时）──
+	// ⭐ 紧跟可行动发现之后：监控场景下"变了什么"是最先要看的
+	if rep.Diff != nil {
+		WriteDiff(w, rep.Diff)
+	}
+
 	// ── DNS ──
 	if rep.DNS != nil {
 		fmt.Fprintln(w)
@@ -534,6 +540,50 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 		fmt.Fprintf(w, "【耗时】%s | 总计 %s\n", strings.Join(parts, " "), rep.Total)
 	}
 	fmt.Fprintln(w, rule)
+}
+
+// WriteDiff 输出快照差异段
+//
+// ⭐ recon 报告内嵌（rep.Diff）与 `wukan diff` 命令共用同一渲染 ——
+//
+//	保证两个入口看到的变化格式完全一致。
+func WriteDiff(w io.Writer, d *SnapshotDiff) {
+	if d == nil {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "【与上次快照的差异】基准 %s（%s） → 最新 %s（%s） | 变化 %d 处\n",
+		d.PrevAt.Local().Format("2006-01-02 15:04"), humanAge(time.Since(d.PrevAt)),
+		d.CurrAt.Local().Format("2006-01-02 15:04"), humanAge(time.Since(d.CurrAt)),
+		len(d.Changes))
+	if len(d.Changes) == 0 {
+		fmt.Fprintln(w, "  ✓ 与上次快照一致，无变化")
+		return
+	}
+	for _, c := range d.Changes {
+		fmt.Fprintf(w, "  %s [%s] %s", LevelIcon(c.Level), c.Kind, c.Target)
+		if c.Before != "" || c.After != "" {
+			fmt.Fprintf(w, "（%s → %s）", dashOr(c.Before), dashOr(c.After))
+		}
+		fmt.Fprintln(w)
+		if c.Detail != "" {
+			fmt.Fprintf(w, "       判读：%s\n", c.Detail)
+		}
+	}
+}
+
+// humanAge 粗粒度年龄（差异报告用）
+func humanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "刚刚"
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟前", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d 小时前", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d 天前", int(d.Hours()/24))
+	}
 }
 
 func flagBasisShort(sources []string) string {

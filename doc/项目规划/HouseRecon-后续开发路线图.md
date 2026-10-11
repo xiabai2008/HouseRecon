@@ -33,7 +33,7 @@ go build -o wukan.exe ./cmd/wukan
 # ③ 冒烟测试：应看到 ASCII 启动页
 ./wukan.exe help
 
-# ④ 单元测试：应 72 项全过
+# ④ 单元测试：应 107 项全过
 go test ./...
 # 期望输出：ok  github.com/wukan/wukan/internal/httpprobe
 #           ok  github.com/wukan/wukan/internal/ipinfo
@@ -185,7 +185,7 @@ cd prototype/wukan-go
 
 | # | 任务 | 说明 |
 |---|---|---|
-| P1-1 | **多目标 diff（变化监控）** | 保存上次结果，对比报告"新增/消失的子域、端口、指纹变化"。配合定时任务做资产监控 |
+| P1-1 | ✅ **多目标 diff（变化监控）**（已完成 2026-10-11：`recon --snapshot` + `wukan diff [--since]`；⭐覆盖门控防假"消失"、CDN 轮换归并、目标归一化统一；审查后修复并发写 map 崩溃） | 保存上次结果，对比报告"新增/消失的子域、端口、指纹变化"。配合定时任务做资产监控 |
 | P1-2 | **子域批量端口扫描** | 现在 `--ports` 只扫根域 IP；应对存活子域也扫（注意量级控制） |
 | P1-3 | **指纹源扩充** | 现有 5 路。可加：JARM 指纹、HTTP/2 SETTINGS 指纹、TLS 扩展顺序（JA3） |
 | P1-4 | **报告导出（Markdown/HTML）** | 现在只有 table/json/hosts/subs。加一个适合直接交付/存档的格式 |
@@ -204,7 +204,8 @@ cd prototype/wukan-go
 ```
 ✅ P0-1 + P0-2  已完成（2026-10-10）
 ✅ P0-3 + P0-4  已完成（2026-10-11）
-▶ 下一步：P1-1（多目标 diff 变化监控 —— 最有产品价值的一步）
+✅ P1-1         已完成（2026-10-11，经代码审查加固）
+▶ 下一步：P1-2 子域批量端口扫描 / P1-3 指纹源扩充 / P1-4 报告导出（按需）
 ```
 
 ---
@@ -247,7 +248,7 @@ cd prototype/wukan-go
 cd prototype/wukan-go
 gofmt -l .                  # 应为空
 go vet ./...                # 应无输出
-go test ./...               # 应 72 项全过（新增功能需补测试）
+go test ./...               # 应 107 项全过（新增功能需补测试）
 go build -o wukan.exe ./cmd/wukan
 ```
 

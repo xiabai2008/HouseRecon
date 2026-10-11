@@ -50,19 +50,24 @@
 
 ---
 
-## 四个子命令
+## 五个子命令
 
 ```bash
 wukan recon <域名>     # 目标信息卡：DNS/注册信息/证书子域/被动DNS/rDNS/端口/指纹
 wukan tech <URL>       # HTTP 指纹采集 + ⭐冲突检测
 wukan ports <主机>     # TCP connect 端口扫描
 wukan ipinfo <IP>      # IP 归属批量查询（含 rDNS 反查）
+wukan diff <域名>      # ⭐ 快照对比（变化监控，需先 recon --snapshot）
 ```
 
 一条龙：
 
 ```bash
 wukan recon example.com --ports 80,443 --tech --quic
+
+# 变化监控：存快照 → 自动对比上次 → 随时离线复查
+wukan recon example.com --snapshot
+wukan diff example.com --since 7d
 ```
 
 ---
@@ -162,6 +167,15 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 
 代价（已在输出中如实告知）：目标侧留下完整 established 记录；超时无法区分"被 DROP 的开放端口"与"不存在的端口"。
 
+### 4. 变化监控：基线与 Diff ⭐
+
+单次扫描是一次性的，**基线是复利的**。`--snapshot` 保存每次运行的资产快照并自动与上次对比：
+
+- 新增/消失的子域、解析 IP、开放端口、HTTP 指纹变化 —— 每条都带判读（该做什么）
+- **覆盖门控**：数据源失败或运行参数变化时，差异标记为"不可比"（`coverage_changed`），而不是误报成片"资产消失"
+- **CDN 节点轮换归并**：同一端口随解析 IP 移动归并为低危提示，不冒充"新暴露端口"
+- `wukan diff <域名> [--since 7d]` 离线复查，退出码适配定时监控脚本
+
 ---
 
 ## 实测数据
@@ -174,10 +188,11 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 | `tech` 阶段（15 个目标） | 10.8s（冷）→ 0s（缓存命中），**整体快 6 倍** |
 | 端口缓存（本地靶场 8 端口） | 冷扫 0.63s → 二次 8/8 全命中 **0.00s**（零连接） |
 | tech 降级重试（本地靶场） | 重定向黑洞 → 跳过重定向拿到 **302**；TLS 失败 → http 回退拿到 **200**（对照组均失败） |
+| 变化监控 E2E | 覆盖率门控：CT 失败时 **0 条假"消失"**；12 连跑 **0 崩溃**（修复前 1/12 并发写 map 崩溃） |
 | 子域批量指纹的增量价值 | 根域探测发现 **0** 处冲突，子域探测发现 **5** 处 |
 | rDNS | 6 个 IP 中 2 个**无 PTR**（无 PTR 是常态，非异常） |
 | favicon 哈希表 | 23 条，**全部实测**（含 md5 可核对） |
-| 单元测试 | 72 项全过 |
+| 单元测试 | 107 项全过 |
 
 ### 数据源实测结论
 
@@ -238,6 +253,7 @@ go test ./prototype/wukan-go/...
 | 被动 DNS | `~/.wukan/passive-cache.json` | 14 天 |
 | HTTP 指纹 | `~/.wukan/tech-cache.json` | **1 天**（负缓存 10 分钟） |
 | 端口扫描 | `~/.wukan/ports-cache.json` | **6 小时**（filtered/error 10 分钟） |
+| 资产快照 | `~/.wukan/snapshots/<域名>.json` | 每目标保留最近 30 个（内容相同 24h 内去重） |
 
 指纹缓存 TTL 特意设为 1 天而非 7 天：**HTTP 指纹是"当前状态"**，换版本、开关服务、改安全头都会立刻改变。
 过时的安全结论比没有结论更危险。
@@ -289,13 +305,14 @@ filtered/error 是**不确定结论**（超时无法区分"被丢掉的开放端
 
 **HouseRecon** is a lightweight network asset reconnaissance toolkit in Go — **zero third-party dependencies, single binary**.
 
-Four subcommands: `recon` (asset card), `tech` (HTTP fingerprinting + **conflict detection**), `ports` (TCP connect scan), `ipinfo` (IP attribution + rDNS).
+Five subcommands: `recon` (asset card), `tech` (HTTP fingerprinting + **conflict detection**), `ports` (TCP connect scan), `ipinfo` (IP attribution + rDNS), `diff` (snapshot diff for change monitoring).
 
 **What sets it apart:**
 
 - **Actionable findings, not raw dumps** — 30+ finding types with severity, evidence and remediation guidance.
 - **Fingerprint conflict matrix** — collects 5 independent fingerprint sources and **cross-validates them**. Existing tools merely concatenate results; contradictions usually point to real issues (CDN origin leaks, certificate misconfiguration, cookies missing security flags).
 - **TCP connect scanning to avoid SYN Proxy false positives** — stateless SYN proxies reply SYN-ACK to *any* SYN, making half-open scanners report 3306/3389/5432 as open. connect scanning requires a completed handshake and is immune.
+- **Change monitoring with baselines** — `recon --snapshot` saves asset snapshots and diffs them against the previous run. **Coverage gating** keeps data-source failures or flag changes from producing false "disappeared" alarms.
 
 **Authorized use only.** Active scanning features are disabled by default. See [LICENSE](LICENSE).
 

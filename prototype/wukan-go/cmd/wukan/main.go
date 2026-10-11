@@ -44,6 +44,8 @@ func main() {
 		runPorts(os.Args[2:])
 	case "tech", "fingerprint", "fp":
 		runTech(os.Args[2:])
+	case "diff":
+		runDiff(os.Args[2:])
 	case "version", "-v", "--version":
 		printVersion(os.Stdout)
 	case "help", "-h", "--help":
@@ -176,9 +178,11 @@ func printUsageTo(w io.Writer) {
 命令:
   recon <域名...>     目标信息卡（DNS + 注册信息 + 证书子域 + 被动DNS）
                       ⭐ 一条龙: --ports 80,443 --tech
+                      ⭐ 变化监控: --snapshot（保存快照并与上次对比）
   tech <URL...>       HTTP 指纹采集 + ⭐冲突检测
   ports <主机...>     端口扫描（⚠ 主动探测，需指定端口）
   ipinfo <IP...>      IP 归属批量查询
+  diff <域名...>      ⭐ 快照对比（变化监控，需先 recon --snapshot）
   version             显示版本
   help                显示本帮助
 
@@ -539,6 +543,13 @@ var flagsWithValue = []string{
 	// recon
 	"-d", "--dns",
 	"-n",
+	"--tech-max",
+	"--tech-sub-max",
+	"--quic-probes",
+	"--rdns-max",
+	"--reverse",
+	// diff
+	"--since",
 	// tech
 	"-c", "--concurrency",
 	"--timeout",
@@ -754,6 +765,8 @@ type reconFlags struct {
 	allDomains     bool
 	noCache        bool
 	quiet          bool
+	// ⭐ 资产快照（P1-1 变化监控）
+	snapshot bool
 }
 
 func runRecon(args []string) {
@@ -997,6 +1010,56 @@ func runRecon(args []string) {
 		}
 	}
 
+	// ⭐ 资产快照（P1-1 变化监控）：保存本次结果并与上次对比
+	if f.snapshot {
+		store := recon.NewSnapshotStore(recon.DefaultSnapshotDir(), recon.DefaultSnapshotKeep)
+		for _, j := range results {
+			if j.rep == nil {
+				continue
+			}
+			snap := recon.BuildSnapshot(j.rep)
+			prev, appended, err := store.SaveAndPrevious(snap)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "警告: %s 快照保存失败（%v）\n", snap.Target, err)
+				continue
+			}
+			// ⭐ 覆盖率警告：被动数据源失败时相关差异不可比（避免用户误读 diff）
+			cov := snap.Coverage
+			var missing []string
+			if !cov.DNS {
+				missing = append(missing, "DNS")
+			}
+			if !cov.CT {
+				missing = append(missing, "CT")
+			}
+			if !cov.Passive {
+				missing = append(missing, "被动DNS")
+			}
+			if len(missing) > 0 && !f.quiet {
+				fmt.Fprintf(os.Stderr, "⚠ [%s] 本次采集覆盖不完整（%s 未成功），相关差异将标记为不可比\n",
+					snap.Target, strings.Join(missing, "/"))
+			}
+			if prev != nil {
+				diff := recon.DiffSnapshots(prev, snap)
+				if diff == nil {
+					fmt.Fprintf(os.Stderr, "警告: [%s] 无法对比（目标不一致？）\n", snap.Target)
+				} else {
+					j.rep.Diff = diff
+				}
+				if !f.quiet {
+					when := prev.TakenAt.Local().Format("2006-01-02 15:04")
+					if appended {
+						fmt.Fprintf(os.Stderr, "已保存快照 [%s]（对比基准：%s）\n", snap.Target, when)
+					} else {
+						fmt.Fprintf(os.Stderr, "快照与上次一致 [%s]，未重复保存（对比基准：%s）\n", snap.Target, when)
+					}
+				}
+			} else if !f.quiet {
+				fmt.Fprintf(os.Stderr, "已保存快照 [%s]（首次，无对比基准）\n", snap.Target)
+			}
+		}
+	}
+
 	if err := emitRecon(f, results); err != nil {
 		fmt.Fprintf(os.Stderr, "输出失败: %v\n", err)
 		os.Exit(1)
@@ -1162,6 +1225,8 @@ func parseReconFlags(args []string) *reconFlags {
 			f.allDomains = true
 		case "--no-cache":
 			f.noCache = true
+		case "--snapshot":
+			f.snapshot = true
 		case "-q", "--quiet":
 			f.quiet = true
 		}
@@ -1236,6 +1301,7 @@ func printReconUsage() {
       --no-ipinfo      跳过 IP 归属查询
       --no-verify      跳过子域的 DNS 解析验证（更快）
       --all-domains    CT 结果包含非子域条目（如 example-int.com 这类平行域）
+      --snapshot       ⭐ 保存资产快照并与上次对比（变化监控；配合 wukan diff）
       --no-cache       不使用本地缓存
   -q, --quiet          不打进度信息
   -h, --help           显示本帮助
@@ -2127,3 +2193,193 @@ func strings_Repeat(s string, n int) string {
 }
 
 func newCSVWriter(w io.Writer) *csv.Writer { return csv.NewWriter(w) }
+
+// ── diff 子命令（快照对比 / 变化监控）─────────────────────
+
+type diffFlags struct {
+	since time.Duration
+	// sinceRaw 用户输入的原始时长串（错误提示里保持可读，而不是 "168h0m0s"）
+	sinceRaw string
+	format   string
+	output   string
+}
+
+func runDiff(args []string) {
+	f := parseDiffFlags(args)
+	targets := collectDomains(args)
+	if len(targets) == 0 {
+		printDiffUsage()
+		os.Exit(2)
+	}
+
+	store := recon.NewSnapshotStore(recon.DefaultSnapshotDir(), recon.DefaultSnapshotKeep)
+	now := time.Now()
+
+	var out io.Writer = os.Stdout
+	if f.output != "" {
+		fh, err := os.Create(f.output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "输出失败: %v\n", err)
+			os.Exit(1)
+		}
+		defer fh.Close()
+		out = fh
+	}
+
+	eff := f.format
+	if eff == "" && f.output != "" && strings.EqualFold(filepath.Ext(f.output), ".json") {
+		eff = "json"
+	}
+
+	var diffs []*recon.SnapshotDiff
+	failed := 0
+	for _, target := range targets {
+		d, err := diffOne(store, target, f.since, f.sinceRaw, now)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %s: %v\n", target, err)
+			failed++
+			continue
+		}
+		diffs = append(diffs, d)
+	}
+
+	if eff == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
+		var encErr error
+		if len(diffs) == 1 {
+			encErr = enc.Encode(diffs[0])
+		} else {
+			encErr = enc.Encode(diffs)
+		}
+		if encErr != nil {
+			fmt.Fprintf(os.Stderr, "输出失败: %v\n", encErr)
+			os.Exit(1)
+		}
+	} else {
+		for i, d := range diffs {
+			if i > 0 {
+				fmt.Fprintln(out)
+			}
+			recon.WriteDiff(out, d)
+		}
+	}
+
+	// 失败（无快照 / 文件损坏 / 目标不匹配）必须反映到退出码 —— 供监控脚本判断
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// diffOne 计算单目标的快照差异
+//
+// 默认对比"最近两次快照"；--since 时对比"不晚于 N 前的最新快照 → 最新"。
+func diffOne(store *recon.SnapshotStore, target string, since time.Duration, sinceRaw string, now time.Time) (*recon.SnapshotDiff, error) {
+	snaps, err := store.Load(target)
+	if err != nil {
+		return nil, err
+	}
+	if len(snaps) == 0 {
+		return nil, fmt.Errorf("没有快照记录（先运行: wukan recon %s --snapshot）",
+			recon.NormalizeTarget(target))
+	}
+	curr := snaps[len(snaps)-1]
+
+	var prev *recon.Snapshot
+	if since > 0 {
+		prev, err = store.LatestBefore(target, now.Add(-since))
+		if err != nil {
+			return nil, err
+		}
+		if prev == nil {
+			return nil, fmt.Errorf("没有早于 %s 的快照（最早快照：%s）",
+				sinceRaw, snaps[0].TakenAt.Local().Format("2006-01-02 15:04"))
+		}
+		if prev.TakenAt.Equal(curr.TakenAt) {
+			return nil, fmt.Errorf("没有更早的快照可对比（--since %s 超过了快照历史跨度）", sinceRaw)
+		}
+	} else {
+		if len(snaps) < 2 {
+			return nil, fmt.Errorf("只有一个快照（%s），无对比基准",
+				curr.TakenAt.Local().Format("2006-01-02 15:04"))
+		}
+		prev = snaps[len(snaps)-2]
+	}
+
+	d := recon.DiffSnapshots(prev, curr)
+	if d == nil {
+		return nil, fmt.Errorf("快照对比失败（目标不一致？）")
+	}
+	return d, nil
+}
+
+func parseDiffFlags(args []string) *diffFlags {
+	f := &diffFlags{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		// ⭐ 支持 --since=7d 等号写法（否则会被当作未知参数静默忽略，
+		//   语义悄悄退回"最近两次"，是危险的静默行为）
+		if strings.HasPrefix(a, "--since=") {
+			v := strings.TrimPrefix(a, "--since=")
+			d, err := recon.ParseSinceDuration(v)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "错误: --since %v\n", err)
+				os.Exit(2)
+			}
+			f.since, f.sinceRaw = d, v
+			continue
+		}
+		switch a {
+		case "-h", "--help":
+			printDiffUsage()
+			os.Exit(0)
+		case "--since":
+			v := nextArg(args, &i, a)
+			d, err := recon.ParseSinceDuration(v)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "错误: --since %v\n", err)
+				os.Exit(2)
+			}
+			f.since, f.sinceRaw = d, v
+		case "--json":
+			f.format = "json"
+		case "-o", "--output":
+			f.output = nextArg(args, &i, a)
+		}
+	}
+	return f
+}
+
+func printDiffUsage() {
+	fmt.Fprint(os.Stderr, `wukan diff — 快照对比（变化监控）
+
+用法:
+  wukan diff <域名...>                 对比最近两次快照
+  wukan diff example.com --since 7d    对比 7 天前 → 最新
+  wukan diff example.com --json        输出 JSON
+  wukan diff a.com b.com               多目标
+
+⭐ 需要先有快照：recon --snapshot 会在每次运行后保存快照
+   （~/.wukan/snapshots/，每目标保留最近 30 个）。
+
+对比内容:
+  · 子域 新增/消失          · 解析 IP 新增/消失
+  · 端口 新增开放/不再开放/服务变化
+  · HTTP 指纹 状态码 / Server / favicon / 标题变化
+
+  每条变化都带判读（这意味着什么、该做什么）。
+
+参数:
+      --since <时长>   对比基准的时间跨度（如 7d / 24h / 90m；默认"最近两次"）
+      --json          输出 JSON
+  -o, --output <文件>  输出到文件（.json 扩展名自动用 JSON）
+  -h, --help           显示本帮助
+
+示例:
+  # 每日监控：跑 recon 存快照，之后随时看变化
+  wukan recon example.com --snapshot
+  wukan diff example.com
+  wukan diff example.com --since 7d
+`)
+}
