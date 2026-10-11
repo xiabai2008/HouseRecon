@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -776,12 +777,18 @@ type reconFlags struct {
 	quiet          bool
 	// ⭐ 资产快照（P1-1 变化监控）
 	snapshot bool
+	// ⭐ --exit-code：0=无告警变化 / 1=有 / 2=失败（需与 --snapshot 搭配）
+	exitCode bool
 }
 
 func runRecon(args []string) {
 	f := parseReconFlags(args)
 	if len(args) == 0 {
 		printReconUsage()
+		os.Exit(2)
+	}
+	if f.exitCode && !f.snapshot {
+		fmt.Fprintln(os.Stderr, "错误: --exit-code 需要与 --snapshot 一起使用（先有快照才有可对比的变化）")
 		os.Exit(2)
 	}
 
@@ -1029,6 +1036,9 @@ func runRecon(args []string) {
 	}
 
 	// ⭐ 资产快照（P1-1 变化监控）：保存本次结果并与上次对比
+	//   --exit-code（配合 --snapshot）：0=无告警变化 / 1=有 / 2=失败 —— 供监控脚本
+	snapFailed := 0
+	alertChanges := 0
 	if f.snapshot {
 		store := recon.NewSnapshotStore(recon.DefaultSnapshotDir(), recon.DefaultSnapshotKeep)
 		for _, j := range results {
@@ -1039,6 +1049,7 @@ func runRecon(args []string) {
 			prev, appended, err := store.SaveAndPrevious(snap)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "警告: %s 快照保存失败（%v）\n", snap.Target, err)
+				snapFailed++
 				continue
 			}
 			// ⭐ 覆盖率警告：被动数据源失败时相关差异不可比（避免用户误读 diff）
@@ -1061,8 +1072,12 @@ func runRecon(args []string) {
 				diff := recon.DiffSnapshots(prev, snap)
 				if diff == nil {
 					fmt.Fprintf(os.Stderr, "警告: [%s] 无法对比（目标不一致？）\n", snap.Target)
+					snapFailed++
 				} else {
 					j.rep.Diff = diff
+					// ⭐ 告警信号：本次实测 vs 上次存储（去重也正确 ——
+					//   内容相同则 prev==snap 内容，AlertCount 为 0）
+					alertChanges += diff.AlertCount()
 				}
 				if !f.quiet {
 					when := prev.TakenAt.Local().Format("2006-01-02 15:04")
@@ -1081,6 +1096,17 @@ func runRecon(args []string) {
 	if err := emitRecon(f, results); err != nil {
 		fmt.Fprintf(os.Stderr, "输出失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// ⭐ --exit-code（配合 --snapshot）：供 cron / 任务计划等调度器感知"该不该告警"
+	//   0 = 无告警变化（含首次建立基线）；1 = 有告警变化；2 = 快照保存/对比失败
+	if f.exitCode {
+		if snapFailed > 0 {
+			os.Exit(2)
+		}
+		if alertChanges > 0 {
+			os.Exit(1)
+		}
 	}
 }
 
@@ -1280,6 +1306,8 @@ func parseReconFlags(args []string) *reconFlags {
 			f.noCache = true
 		case "--snapshot":
 			f.snapshot = true
+		case "--exit-code":
+			f.exitCode = true
 		case "-q", "--quiet":
 			f.quiet = true
 		}
@@ -1361,6 +1389,8 @@ func printReconUsage() {
       --no-verify      跳过子域的 DNS 解析验证（更快）
       --all-domains    CT 结果包含非子域条目（如 example-int.com 这类平行域）
       --snapshot       ⭐ 保存资产快照并与上次对比（变化监控；配合 wukan diff）
+      --exit-code      ⭐ 监控退出码（需与 --snapshot 搭配）：
+                       0=无告警变化（含首次建立基线）/ 1=有变化 / 2=失败
       --no-cache       不使用本地缓存
   -q, --quiet          不打进度信息
   -h, --help           显示本帮助
@@ -2408,6 +2438,8 @@ type diffFlags struct {
 	sinceRaw string
 	format   string
 	output   string
+	// exitCode GNU diff 风格退出码（0=无变化 / 1=有变化 / 2=错误）—— 供调度器/监控脚本感知变化
+	exitCode bool
 }
 
 func runDiff(args []string) {
@@ -2442,6 +2474,11 @@ func runDiff(args []string) {
 	for _, target := range targets {
 		d, err := diffOne(store, target, f.since, f.sinceRaw, now)
 		if err != nil {
+			// ⭐ 首次运行（只有一份快照）不是错误：对监控而言"还没基线"= 无事可报
+			if errors.Is(err, errNoBaseline) {
+				fmt.Fprintf(os.Stderr, "ℹ %s: %v\n", recon.NormalizeTarget(target), err)
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "错误: %s: %v\n", target, err)
 			failed++
 			continue
@@ -2461,7 +2498,7 @@ func runDiff(args []string) {
 		}
 		if encErr != nil {
 			fmt.Fprintf(os.Stderr, "输出失败: %v\n", encErr)
-			os.Exit(1)
+			os.Exit(exitTrouble(f.exitCode))
 		}
 	} else {
 		for i, d := range diffs {
@@ -2472,11 +2509,35 @@ func runDiff(args []string) {
 		}
 	}
 
-	// 失败（无快照 / 文件损坏 / 目标不匹配）必须反映到退出码 —— 供监控脚本判断
+	// 退出码：
+	//   默认（兼容旧行为）: 0 = 成功（无论有无变化），1 = 失败
+	//   --exit-code（GNU diff 风格）: 0 = 无变化，1 = 有变化，2 = 失败
+	//   —— 供 cron / 任务计划 / systemd 等调度器直接感知"该不该告警"
 	if failed > 0 {
-		os.Exit(1)
+		os.Exit(exitTrouble(f.exitCode))
+	}
+	if f.exitCode {
+		changes := 0
+		for _, d := range diffs {
+			changes += d.AlertCount() // coverage_changed 不计入告警信号
+		}
+		if changes > 0 {
+			os.Exit(1)
+		}
 	}
 }
+
+// exitTrouble 失败时的退出码（--exit-code 模式下用 2，与"有变化"的 1 区分）
+func exitTrouble(withExitCode bool) int {
+	if withExitCode {
+		return 2
+	}
+	return 1
+}
+
+// errNoBaseline 尚无对比基准（首次运行只有一份快照）——
+// 不是错误：对监控脚本而言"还没基线"= 无事可报（--exit-code 下视为 0）
+var errNoBaseline = errors.New("尚无对比基准")
 
 // diffOne 计算单目标的快照差异
 //
@@ -2507,8 +2568,8 @@ func diffOne(store *recon.SnapshotStore, target string, since time.Duration, sin
 		}
 	} else {
 		if len(snaps) < 2 {
-			return nil, fmt.Errorf("只有一个快照（%s），无对比基准",
-				curr.TakenAt.Local().Format("2006-01-02 15:04"))
+			return nil, fmt.Errorf("%w（%s），首次运行请先积累两份快照",
+				errNoBaseline, curr.TakenAt.Local().Format("2006-01-02 15:04"))
 		}
 		prev = snaps[len(snaps)-2]
 	}
@@ -2550,6 +2611,8 @@ func parseDiffFlags(args []string) *diffFlags {
 			f.since, f.sinceRaw = d, v
 		case "--json":
 			f.format = "json"
+		case "--exit-code":
+			f.exitCode = true
 		case "-o", "--output":
 			f.output = nextArg(args, &i, a)
 		}
@@ -2579,6 +2642,8 @@ func printDiffUsage() {
 参数:
       --since <时长>   对比基准的时间跨度（如 7d / 24h / 90m；默认"最近两次"）
       --json          输出 JSON
+      --exit-code     ⭐ GNU diff 风格退出码：0=无变化（含"首次运行尚无基准"）/
+                      1=有变化 / 2=错误 —— 供 cron / 任务计划等调度器感知"该不该告警"
   -o, --output <文件>  输出到文件（.json 扩展名自动用 JSON）
   -h, --help           显示本帮助
 
@@ -2587,5 +2652,8 @@ func printDiffUsage() {
   wukan recon example.com --snapshot
   wukan diff example.com
   wukan diff example.com --since 7d
+
+  # 调度器里检测变化（有变化 → 退出码 1 → 触发告警）
+  wukan diff example.com --exit-code
 `)
 }

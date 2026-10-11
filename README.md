@@ -183,6 +183,8 @@ TCP connect 扫描**必须完成三次握手**才能判定开放，SYN Proxy 伪
 - **CDN 节点轮换归并**：同一端口随解析 IP 移动归并为低危提示，不冒充"新暴露端口"
 - `wukan diff <域名> [--since 7d]` 离线复查，退出码适配定时监控脚本
 - `wukan timeline <域名>` 从快照历史聚合迁移轨迹（零外部依赖）；配 `WUKAN_OTX_KEY` 还可接入 OTX 的更早历史
+- ⭐ **定时任务封装**：`scripts/monitor/`（Windows 任务计划 / cron / systemd timer 一键脚本 + 通知钩子，完整配置文档）
+- `recon --snapshot --exit-code`：0=无告警变化 / 1=有变化 / 2=失败 —— 调度器直接可用的信号
 
 ### 5. 深度指纹与交付报告
 

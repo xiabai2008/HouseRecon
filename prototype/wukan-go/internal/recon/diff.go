@@ -69,6 +69,24 @@ type SnapshotDiff struct {
 	Changes []Change  `json:"changes,omitempty"`
 }
 
+// AlertCount 可告警的变化数
+//
+// ⭐ coverage_changed 是"不可比说明"（数据源失败/参数变化），不是资产变化 ——
+//
+//	不计入告警信号，否则一次数据源抖动会导致每轮监控都误报。
+func (d *SnapshotDiff) AlertCount() int {
+	if d == nil {
+		return 0
+	}
+	n := 0
+	for _, c := range d.Changes {
+		if c.Kind != ChangeCoverageChanged {
+			n++
+		}
+	}
+	return n
+}
+
 // IsEmpty 是否无变化
 func (d *SnapshotDiff) IsEmpty() bool {
 	return d == nil || len(d.Changes) == 0
