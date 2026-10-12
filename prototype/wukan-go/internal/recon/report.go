@@ -22,7 +22,7 @@ import (
 //   - HTML 自带内联样式（单文件、无外部资源），HTML 转义由 html/template 保证
 //   - 行数上限保护（子域/被动/指纹表各 100 行），避免大目标产出巨型文件
 
-const reportTool = "屋勘 HouseRecon · wukan/0.1.0"
+const reportTool = "屋勘 HouseRecon · wukan/0.2.0"
 
 const reportDisclaimer = "本报告仅用于对**自己拥有或已获书面授权**的资产进行梳理。" +
 	"主动探测功能（端口扫描/指纹采集/QUIC）的使用者须自行确保行为符合当地法律。"
@@ -205,6 +205,10 @@ func WriteMarkdown(w io.Writer, rep *Report) error {
 			resolves := "否"
 			if sb.Resolves {
 				resolves = "是"
+				// ⭐ 泛域名二次确认结论（--wildcard-http）直接标注在"解析"列
+				if lbl := sb.ConfirmLabel(); lbl != "" {
+					resolves = "是 " + lbl
+				}
 			}
 			fmt.Fprintf(&b, "| %s | %s | %s | %s | %d |\n",
 				mdCell(sb.Name), resolves,
@@ -492,7 +496,7 @@ footer{margin-top:3rem;color:#888;font-size:.8rem;border-top:1px solid #ddd;padd
 {{if .CT}}{{if .CT.Subdomains}}
 <h2>证书透明度 · 子域（去重 {{len .CT.Subdomains}} 个）</h2>
 <table><tr><th>子域</th><th>解析</th><th>首次出现</th><th>最后出现</th><th>证书数</th></tr>
-{{range $i, $sb := .CT.Subdomains}}{{if lt $i 100}}<tr><td>{{$sb.Name}}</td><td>{{if $sb.Resolves}}是{{else}}否{{end}}</td><td>{{fmtDate $sb.FirstSeen}}</td><td>{{fmtDate $sb.LastSeen}}</td><td>{{$sb.CertCount}}</td></tr>{{end}}{{end}}
+{{range $i, $sb := .CT.Subdomains}}{{if lt $i 100}}<tr><td>{{$sb.Name}}</td><td>{{if $sb.ConfirmLabel}}{{$sb.ConfirmLabel}}{{else if $sb.Resolves}}是{{else}}否{{end}}</td><td>{{fmtDate $sb.FirstSeen}}</td><td>{{fmtDate $sb.LastSeen}}</td><td>{{$sb.CertCount}}</td></tr>{{end}}{{end}}
 </table>
 {{if gt (len .CT.Subdomains) 100}}<p class="meta">…（还有 {{sub (len .CT.Subdomains) 100}} 个，见 JSON 输出）</p>{{end}}
 {{end}}{{end}}

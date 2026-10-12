@@ -28,7 +28,7 @@ import (
 	"github.com/wukan/wukan/internal/recon"
 )
 
-const version = "wukan/0.1.0"
+const version = "wukan/0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -161,7 +161,7 @@ func printBanner(w io.Writer) {
 // ⭐ 版本号本身保持**单行**输出，因为脚本常解析它。
 //
 //	启动页只在 TTY 下出现（见 bannerOn），
-//	所以 `wukan version | awk '{print $1}'` 依然只拿到 "wukan/0.1.0"。
+//	所以 `wukan version | awk '{print $1}'` 依然只拿到 "wukan/0.2.0"。
 func printVersion(w io.Writer) {
 	printBanner(w)
 	fmt.Fprintln(w, version)
@@ -549,6 +549,7 @@ var flagsWithValue = []string{
 	"-n",
 	"--tech-max",
 	"--tech-sub-max",
+	"--wildcard-http-max",
 	"--quic-probes",
 	"--rdns-max",
 	"--reverse",
@@ -767,14 +768,17 @@ type reconFlags struct {
 	noTechRetry    bool
 	techJARM       bool
 	techNoH2       bool
-	noRdns         bool
-	rdnsMax        int
-	noIPInfo       bool
-	noVerify       bool
-	parallel       bool
-	allDomains     bool
-	noCache        bool
-	quiet          bool
+	// ⭐ 泛域名 HTTP 二次确认（主动探测）
+	wildcardHTTP    bool
+	wildcardHTTPMax int
+	noRdns          bool
+	rdnsMax         int
+	noIPInfo        bool
+	noVerify        bool
+	parallel        bool
+	allDomains      bool
+	noCache         bool
+	quiet           bool
 	// ⭐ 资产快照（P1-1 变化监控）
 	snapshot bool
 	// ⭐ --exit-code：0=无告警变化 / 1=有 / 2=失败（需与 --snapshot 搭配）
@@ -844,6 +848,11 @@ func runRecon(args []string) {
 	}
 	if f.techSubMax > 0 {
 		opt.TechSubMax = f.techSubMax
+	}
+	// ⭐ 泛域名 HTTP 二次确认（主动探测，默认关；仅当检测到泛域名时生效）
+	opt.WildcardHTTPConfirm = f.wildcardHTTP
+	if f.wildcardHTTPMax > 0 {
+		opt.WildcardHTTPMax = f.wildcardHTTPMax
 	}
 
 	// ⭐ tech 指纹缓存（覆盖"扫→复核→写报告"循环）
@@ -1268,6 +1277,10 @@ func parseReconFlags(args []string) *reconFlags {
 			f.techJARM = true
 		case "--tech-no-h2":
 			f.techNoH2 = true
+		case "--wildcard-http":
+			f.wildcardHTTP = true
+		case "--wildcard-http-max":
+			f.wildcardHTTPMax = intArg(nextArg(args, &i, a), 20)
 		case "--no-rdns":
 			f.noRdns = true
 		case "--rdns-max":
@@ -1367,6 +1380,9 @@ func printReconUsage() {
       --tech-sub-max <n> 最多探测多少个子域（默认 15）
       --no-tech-sub     只探根域，不探子域
       --no-tech-retry   失败目标不降级重试（默认开启：跳过重定向 / http 回退）
+      --wildcard-http   ⭐ 泛域名二次确认：对"存活"子域发 HTTP，与随机子域默认响应比对，
+                        区分真实站点与泛域名产物（主动探测，默认关；检测到泛域名才生效）
+      --wildcard-http-max <n> 二次确认最多探测多少个子域（默认 20）
       --tech-jarm       ⭐ 采集 JARM TLS 指纹（P1-3；每目标 +10 个连接，默认关）
       --tech-no-h2      不采集 HTTP/2 SETTINGS 指纹（P1-3，默认采集）
       --no-tech-cache   不用 tech 指纹缓存（强制重新探测）
@@ -2071,7 +2087,7 @@ func writeTechJSON(w io.Writer, results []*httpprobe.ProbeResult,
 		Summary:   summary,
 		Results:   results,
 		Conflicts: reports,
-		Scanner:   "wukan-tech/0.1.0",
+		Scanner:   "wukan-tech/0.2.0",
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

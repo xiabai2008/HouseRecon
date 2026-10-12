@@ -183,6 +183,11 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 					if s.IsWildcard {
 						status += "(泛)"
 					}
+					// ⭐ 泛域名 HTTP 二次确认（--wildcard-http）后，
+					//   用更具体的结论替换笼统的"存活"
+					if lbl := s.ConfirmLabel(); lbl != "" {
+						status = lbl
+					}
 				}
 				first := "—"
 				if !s.FirstSeen.IsZero() {
@@ -212,6 +217,11 @@ func WriteText(w io.Writer, rep *Report, maxSubs int) {
 					len(rep.CT.Subdomains)-n)
 			}
 			fmt.Fprintf(w, "\n  图例: ★ = 出现在 3+ 张证书（更可能是真实在用的资产）\n")
+			if rep.WildcardHTTP != nil {
+				fmt.Fprintf(w, "        ✓ 独立响应 = 与泛域名默认站点不同（真实站点）"+
+					"｜✗ 泛域名一致 / ⚠ 疑似泛域名 = 非独立资产，建议剔除"+
+					"｜? 无HTTP响应 = 待人工核实\n")
+			}
 		}
 	}
 

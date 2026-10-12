@@ -53,7 +53,7 @@ func WriteJSON(w io.Writer, rs []PortResult, s Summary) error {
 	}{
 		Summary: s,
 		Results: rs,
-		Scanner: "wukan-ports/0.1.0 (TCP connect)",
+		Scanner: "wukan-ports/0.2.0 (TCP connect)",
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

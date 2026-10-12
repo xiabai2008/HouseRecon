@@ -64,6 +64,9 @@ type Report struct {
 	PortsSpec string `json:"ports_spec,omitempty"`
 	// TechErr 指纹采集未执行的原因
 	TechErr string `json:"tech_error,omitempty"`
+	// WildcardHTTP ⭐ 泛域名 HTTP 二次确认汇总（需显式 --wildcard-http 开启，
+	// 主动探测；仅当检测到泛域名时执行）
+	WildcardHTTP *WildcardHTTPCheck `json:"wildcard_http,omitempty"`
 }
 
 // Finding 是一条可行动的发现
@@ -150,6 +153,18 @@ type Options struct {
 	TechCacheTTL time.Duration
 	// TechCache 指纹缓存实例
 	TechCache httpprobe.TechCache
+
+	// ⭐ 泛域名 HTTP 二次确认（主动探测，默认关）
+	//
+	// 背景：泛域名下"能解析 ≠ 存活"—— 任何子域都会解析成功，
+	// 需要对解析成功的子域发 HTTP 请求、与随机子域的默认响应比对，
+	// 才能区分真实站点与泛域名产物（见 wildcard_http.go）。
+	WildcardHTTPConfirm bool
+	// WildcardHTTPMax 二次确认最多探测多少个子域（量级控制，默认 20）
+	//
+	// ⭐ 每个子域 1 次 HTTP 请求（https 失败会降级 http，最多再 +1），
+	//   20 个子域的请求量与 --tech-sub-max 默认档相当。
+	WildcardHTTPMax int
 	// DoIPInfo 是否对 IP 做归属查询
 	DoIPInfo bool
 	// IPInfoWorkers IP 归属并发
@@ -200,12 +215,15 @@ func DefaultOptions() Options {
 		TechJARM: false,
 		TechNoH2: false,
 		// ⭐ 子域探测默认开启 —— 这是"覆盖整个攻击面"的关键
-		TechSubdomains:  true,
-		TechSubMax:      15,
-		DoIPInfo:        true,
-		IPInfoWorkers:   8,
-		MaxSubdomains:   30,
-		IPInfoSecondary: true,
+		TechSubdomains: true,
+		TechSubMax:     15,
+		// ⭐ 泛域名 HTTP 二次确认（主动，默认关；仅当检测到泛域名时生效）
+		WildcardHTTPConfirm: false,
+		WildcardHTTPMax:     20,
+		DoIPInfo:            true,
+		IPInfoWorkers:       8,
+		MaxSubdomains:       30,
+		IPInfoSecondary:     true,
 	}
 }
 
@@ -463,6 +481,18 @@ func (r *Runner) Run(ctx context.Context, domain string) *Report {
 		}
 	}
 
+	// 阶段 4e：泛域名 HTTP 二次确认（⚠ 主动探测）
+	//
+	// ⭐ 回答"能解析 ≠ 存活"：对解析成功的子域发 HTTP 请求，与随机子域
+	// （必然不存在）的默认响应基线成对比较 —— 响应不同是真实站点的强证据，
+	// 响应相同则说明该子域只是泛域名默认站点，不是独立资产。
+	// 仅当检测到泛域名且显式开启 --wildcard-http 时执行。
+	if r.opt.WildcardHTTPConfirm && rep.DNS != nil && rep.DNS.Wildcard != "" {
+		t := time.Now()
+		rep.WildcardHTTP = r.confirmWildcardSubdomains(rep)
+		rep.Timing["wildcard_http"] = time.Since(t).String()
+	}
+
 	// 阶段 5：分析发现
 	rep.Findings = Analyze(rep)
 
@@ -544,8 +574,49 @@ func Analyze(rep *Report) []Finding {
 			add("info", "wildcard",
 				fmt.Sprintf("检测到泛域名解析 *.%s", rep.Target),
 				"泛域名会让任意子域都解析成功，因此**子域能解析不能作为资产存活的证据**。"+
-					"判断子域是否真实存在，必须结合 HTTP 响应（返回内容、状态码）。",
+					"判断子域是否真实存在，必须结合 HTTP 响应（返回内容、状态码）。"+
+					"开启 --wildcard-http 可自动完成这一步二次确认。",
 				"泛域名解析到: "+rep.DNS.Wildcard)
+		}
+
+		// ⭐ 泛域名 HTTP 二次确认结果（--wildcard-http）—— 对"能解析 ≠ 存活"的直接回答
+		if rep.WildcardHTTP != nil {
+			wc := rep.WildcardHTTP
+			base := "基线（随机子域 " + wc.ProbeHost + "）: "
+			if wc.BaselineErr != "" {
+				base += "探测失败（" + wc.BaselineErr + "）"
+			} else {
+				t := wc.BaselineTitle
+				if t == "" {
+					t = "无标题"
+				}
+				base += fmt.Sprintf("HTTP %d / 标题「%s」", wc.BaselineStatus, truncateS(t, 30))
+			}
+
+			switch {
+			case wc.Probed == 0:
+				add("info", "wildcard_http",
+					"泛域名 HTTP 二次确认：没有可确认的子域",
+					base+"\n本次没有「解析成功且非通配符证书」的子域 —— 无需二次确认。")
+			case wc.BaselineErr != "":
+				add("info", "wildcard_http",
+					fmt.Sprintf("泛域名 HTTP 二次确认（能力降级）：%d 个子域有 HTTP 响应", wc.Real),
+					base+"\n"+
+						"基线不可用时无法做「同站比对」，只能确认「有响应」，无法进一步区分"+
+						"真实站点与泛域名默认站点。结果按保守口径标注，建议稍后重试。",
+					wildcardHTTPEvidence(rep)...)
+			default:
+				add("info", "wildcard_http",
+					fmt.Sprintf("泛域名 HTTP 二次确认：%d 个独立响应 / %d 个泛域名产物",
+						wc.Real, wc.Wildcard+wc.WildcardNoHTTP),
+					base+"\n"+
+						"对解析成功的子域发 HTTP 请求并与基线成对比对：\n"+
+						fmt.Sprintf("  · ✓ 独立响应 %d 个 —— 响应与默认站点不同，是真实存在的站点（强证据）\n", wc.Real)+
+						fmt.Sprintf("  · ✗ 泛域名一致 %d 个 —— 响应与默认站点完全相同，不是独立资产（可从存活列表剔除）\n", wc.Wildcard)+
+						fmt.Sprintf("  · ⚠ 疑似泛域名 %d 个 —— 无 HTTP 响应且指向泛域名地址（弱证据，建议人工核实）\n", wc.WildcardNoHTTP)+
+						fmt.Sprintf("  · ? 无HTTP响应 %d 个 —— 无法判定（可能是非 Web 服务）", wc.Inconclusive),
+					wildcardHTTPEvidence(rep)...)
+			}
 		}
 
 		if len(rep.DNS.IPs) == 0 && !rep.DNS.NXDomain() {

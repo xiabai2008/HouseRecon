@@ -56,6 +56,12 @@ type SubdomainInfo struct {
 	CertCount int `json:"cert_count,omitempty"`
 	// RevokedCount 其中被吊销的证书数
 	RevokedCount int `json:"revoked_count,omitempty"`
+	// HTTPConfirm ⭐ 泛域名 HTTP 二次确认结果（--wildcard-http 且检测到泛域名时填充）
+	//
+	//	real / wildcard / wildcard_no_http / inconclusive（见 wildcard_http.go）
+	HTTPConfirm string `json:"http_confirm,omitempty"`
+	// HTTPStatus 二次确认时的 HTTP 状态码（0 = 无响应）
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 // SubdomainResult 子域收集结果
