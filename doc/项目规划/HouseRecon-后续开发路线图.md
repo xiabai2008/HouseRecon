@@ -208,6 +208,8 @@ cd prototype/wukan-go
    P2-1..P2-4（2026-10-12）
 ✅ 定时任务封装（2026-10-12）：scripts/monitor/（任务计划/cron/systemd 一键脚本）
    + recon --exit-code（0=无告警变化 / 1=有 / 2=失败）—— 资产监控闭环落地
+✅ 泛域名 HTTP 二次确认（2026-10-12，技术债 #4）：recon --wildcard-http
+   （版本号 0.1.0 → 0.2.0）
 ▶ 后续可选：
    · CT 源 key 支持（certspotter 自备 key）
    · Web 控制台（技术方案 P2 阶段）与报告模板定制
@@ -222,7 +224,7 @@ cd prototype/wukan-go
 | 1 | **CT 源配额紧**（certspotter 100 次/小时） | 大量目标需分批或自备 key |
 | 2 | **被动 DNS 配额 50 次/天**（hackertarget） | ✅ 已加 key 支持（`WUKAN_HACKERTARGET_KEY`），批量场景可提升额度 |
 | 3 | **favicon 表仅 23 条** | ✅ 已提供规模化采集工具（`cmd/favicon-collect`）+ 外部扩展表机制；图标天然易碰撞，命中仍只作线索 |
-| 4 | **子域"存活"只验 DNS 解析** | 有泛域名时几乎全"存活"，需 HTTP 确认 |
+| 4 | **子域"存活"只验 DNS 解析** | ✅ 已完成（2026-10-12）：`--wildcard-http` 泛域名 HTTP 二次确认 —— 随机子域基线成对比较（状态码/标题/正文长度/favicon），四类判定（真实/泛域名一致/疑似/不可判定）；E2E 实测 lvh.me + 本地 vhost（真实 → real，默认页 → wildcard）。主动探测，默认关 |
 | 5 | **端口扫描无法区分 filtered 与 closed-for-open** | TCP connect 的固有代价，已在输出中说明 |
 | 6 | **`--tech` 单次最多 20 目标**（含子域） | 大目标需调 `--tech-max`，但请求量会上去 |
 | 7 | 部分文档标题含"人员情报"等敏感词 | 内容为合规预警，但分享时注意语境 |

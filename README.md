@@ -7,7 +7,7 @@
   /\
  /  \
 /____\
-| [] |  屋勘 HouseRecon  v0.1.0
+| [] |  屋勘 HouseRecon  v0.2.0
 |____|  一屋之内，勘遍全网
 ```
 
@@ -90,6 +90,10 @@ wukan recon example.com
 # 一条龙（主动，需授权）
 wukan recon example.com --ports 80,443 --tech
 
+# 泛域名场景：二次确认"存活"子域（主动，需授权）
+# 对解析成功的子域发 HTTP，与随机子域的默认响应比对 → 区分真实站点与泛域名产物
+wukan recon example.com --wildcard-http
+
 # 只看指纹冲突
 wukan tech https://example.com --conflicts
 
@@ -134,7 +138,8 @@ wukan tech -f urls.txt --csv -o out.csv
 
 发现示例：`shadow_asset`（历史证书里已下线的子域）、`stale_passive_ip`（历史 IP）、
 `rdns_identity_mismatch`（IP 归属异常）、`subdomain_stack_diversity`（子域技术栈差异）、
-`txt_tokens`（TXT 泄露第三方验证 token）、`wildcard`（泛域名导致存活判断失真）……
+`txt_tokens`（TXT 泄露第三方验证 token）、`wildcard`（泛域名导致存活判断失真）、
+`wildcard_http`（HTTP 二次确认：真实站点 vs 泛域名产物）……
 
 ### 2. 指纹冲突矩阵 ⭐
 
@@ -288,7 +293,7 @@ filtered/error 是**不确定结论**（超时无法区分"被丢掉的开放端
 
 1. **CT 源配额紧**（certspotter 100 次/小时），大量目标需分批或自备 key
 2. **被动 DNS 配额 50 次/天**（hackertarget 免费层）—— 可配 `WUKAN_HACKERTARGET_KEY` 提升额度
-3. **子域"存活"仅验证 DNS 解析** —— 有泛域名时几乎全部"存活"，需 HTTP 探测确认
+3. **子域"存活"默认仅验证 DNS 解析** —— 有泛域名时几乎全部"存活"；`--wildcard-http` 可做 HTTP 二次确认（主动探测，默认关），区分真实站点与泛域名产物
 4. **端口扫描超时无法区分** "被 DROP 的开放端口"与"不存在的端口"（TCP connect 的固有代价）
 5. **不查被动 DNS 历史解析的完整时间线**（只取当前快照）
 6. **favicon 表覆盖有限**（内置 23 条，且图标天然易碰撞 —— 命中只能作线索，不能作结论）。
