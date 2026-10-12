@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>HouseRecon Social Preview 1280x640</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; width:1280px; height:640px; overflow:hidden; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(900px 420px at 12% -10%, rgba(240,136,62,.20), transparent 60%),
+      radial-gradient(700px 380px at 95% 110%, rgba(63,185,80,.14), transparent 60%),
+      linear-gradient(160deg, #0a0f1a 0%, #0d1526 55%, #0a0f1a 100%);
+    color: #e6edf3;
+  }
+  .grid {
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(148,163,184,.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148,163,184,.06) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+  .frame { position:relative; width:1280px; height:640px; padding:56px 76px 40px; display:flex; flex-direction:column; }
+  .top { display:flex; align-items:flex-start; gap:40px; }
+  pre.house { margin:8px 0 0; color:#f0883e; font:700 25px/1.15 "Cascadia Mono", Consolas, monospace; text-shadow:0 0 26px rgba(240,136,62,.5); }
+  .title { font-size:62px; font-weight:800; letter-spacing:.5px; margin:0; line-height:1.08; }
+  .title .en { background:linear-gradient(90deg,#f0883e,#ffd7a8); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .tagline { margin:12px 0 0; font-size:25px; color:#ffd7a8; font-weight:600; }
+  .desc { margin:14px 0 0; font-size:20px; color:#9fb0c3; line-height:1.6; }
+  .badges { display:flex; gap:12px; margin-top:24px; flex-wrap:wrap; }
+  .pill { font-size:16px; color:#cdd9e5; border:1px solid rgba(148,163,184,.35); border-radius:999px; padding:7px 16px; background:rgba(13,21,38,.6); }
+  .pill b { color:#3fb950; font-weight:700; }
+  .term { margin-top:auto; border:1px solid rgba(148,163,184,.28); border-radius:12px; background:rgba(5,9,16,.8); padding:18px 24px; font:16px/1.8 "Cascadia Mono", Consolas, monospace; }
+  .term .prompt { color:#58a6ff; }
+  .term .cmd { color:#e6edf3; }
+  .term .red { color:#ff7b72; }
+  .term .yellow { color:#e3b341; }
+  .term .dim { color:#8b949e; }
+  .foot { display:flex; justify-content:space-between; align-items:center; margin-top:18px; color:#7d8590; font-size:17px; }
+  .foot .url { color:#9fb0c3; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="frame">
+    <div class="top">
+      <pre class="house">  /\
+ /  \
+/____\
+| [] |
+|____|</pre>
+      <div>
+        <h1 class="title">屋勘 <span class="en">HouseRecon</span></h1>
+        <div class="tagline">一屋之内，勘遍全网</div>
+        <div class="desc">轻量化网络空间资产侦察工具 · 可行动发现 + 指纹冲突矩阵 + 零误报端口扫描</div>
+        <div class="badges">
+          <span class="pill">Go 1.24+</span>
+          <span class="pill"><b>零第三方依赖</b> · 单文件 exe</span>
+          <span class="pill">156 项测试全过</span>
+          <span class="pill">v0.2.0</span>
+        </div>
+      </div>
+    </div>
+    <div class="term">
+      <div><span class="prompt">$</span> <span class="cmd">wukan recon example.com --ports 80,443 --tech</span></div>
+      <div><span class="red">[risky_ports]</span> <span class="cmd">发现 2 个高风险端口直接暴露在公网</span></div>
+      <div><span class="yellow">[cdn_leak]</span> <span class="cmd">声称使用 CloudFront，但源站特征泄露</span></div>
+      <div><span class="dim">└ 判读: 泄露的头帮攻击者识别源站软件与版本，进而匹配对应 CVE</span></div>
+    </div>
+    <div class="foot">
+      <span class="url">github.com/xiabai2008/HouseRecon</span>
+      <span>仅限已获授权的资产使用 · 主动功能默认关闭</span>
+    </div>
+  </div>
+</body>
+</html>
