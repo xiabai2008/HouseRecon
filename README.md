@@ -1,7 +1,20 @@
+<div align="center">
+
 # 屋勘 HouseRecon
 
 > **一屋之内，勘遍全网**
-> 短标语：屋中勘察，尽收踪迹
+
+轻量化网络空间资产侦察工具 · 可行动发现 + 指纹冲突矩阵 + 零误报端口扫描
+
+![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)
+![deps](https://img.shields.io/badge/third--party_deps-0-success)
+![tests](https://img.shields.io/badge/tests-156_passing-brightgreen)
+![platform](https://img.shields.io/badge/platform-Windows_%7C_Linux_%7C_macOS-lightgrey)
+
+*Lightweight attack-surface recon: actionable findings, fingerprint conflict matrix,
+false-positive-free TCP connect scanning — zero dependencies, single binary.*
+
+</div>
 
 ```
   /\
@@ -11,7 +24,76 @@
 |____|  一屋之内，勘遍全网
 ```
 
-轻量化网络空间资产侦察与信息收集工具。**Go 实现，零第三方依赖，单文件 exe。**
+## 它和其他工具的区别
+
+现有信息收集工具（httpx / subfinder / nuclei / naabu / theHarvester…）做的是**采集**：把多个来源的结果拼在一起输出。
+
+屋勘在采集之外多做了一件事：**判断这些结果之间是否自相矛盾，并把矛盾翻译成可行动项**。
+
+| | 常见工具 | 屋勘 |
+|---|---|---|
+| 输出 | 「这些是数据」 | 「**这些是数据 + 哪里有问题 + 你该做什么**」 |
+| 多来源指纹 | 拼接输出，不校验一致性 | ⭐ **交叉校验，冲突单独报出** |
+| 端口扫描 | 多为 SYN 半开（快，但会误报） | ⭐ **TCP connect（慢一个 RTT，但零误报）** |
+| 结论 | 通常只有"是/否" | ⭐ **置信度 + 证据链** |
+
+## 输出示例（节选）
+
+```text
+$ wukan recon example.com --ports 80,443 --tech
+
+🔴 [risky_ports] 发现 2 个高风险端口直接暴露在公网
+     建议：① 改绑内网或走跳板机 ② 限制来源 IP ③ 检查是否有弱口令
+     ├ 3306/tcp mysql 5.7.42
+     └ 6379/tcp redis
+
+🟡 [cdn_leak] 声称使用 CloudFront (AWS)，但源站特征泄露
+     Server: nginx、X-Powered-By: PHP/8.2.0 穿透了代理
+     └ 判读: 泄露的头会帮攻击者识别源站软件与版本，进而匹配对应 CVE
+```
+
+## 核心能力
+
+- 🔍 **默认全被动** — DNS / RDAP / 证书透明度子域 / 被动 DNS / rDNS / IP 归属，不向目标发包
+- ⭐ **指纹冲突矩阵** — 5 路独立指纹（HTTP 头 / TLS / favicon / 正文 / 一致性）交叉校验，矛盾即发现
+- ⭐ **零误报端口扫描** — TCP connect 三次握手判定，免疫 SYN Proxy 误报（AWS Global Accelerator 场景实测）
+- ⭐ **资产变化监控** — 快照 → diff → 定时任务 → 退出码，基线是复利的
+- ⭐ **泛域名 HTTP 二次确认** — 区分「真实站点」与「泛域名产物」，解决"能解析 ≠ 存活"
+- 📄 **交付级报告** — JARM / HTTP/2 指纹 / Shodan 兼容 favicon 哈希 + Markdown / 自包含 HTML 导出
+
+## 快速上手
+
+```bash
+# 编译（Go 1.24+，零第三方依赖）
+go build -o wukan.exe ./prototype/wukan-go/cmd/wukan
+
+# 被动侦察（默认安全，不向目标发包）
+./wukan.exe recon example.com
+
+# 一条龙（主动探测，需已获授权）
+./wukan.exe recon example.com --ports 80,443 --tech
+
+# 变化监控：与上次快照对比
+./wukan.exe diff example.com --since 7d
+```
+
+## 实测数据（精选）
+
+| 项 | 数据 |
+|---|---|
+| JARM 与 Salesforce 官方参考实现 | 逐字符一致 **6/6**（github / cloudflare / baidu / qq / bing / example.com） |
+| 缓存收益 | tech 阶段 10.8s → 0s（快 6 倍）；端口重扫 8/8 全命中 **0.00s（零连接）** |
+| 假阳性纪律 | 冲突检测器零假阳性（测试固化）；CT 数据源失败时 **0 条假"消失"** |
+| 测试 | **156 项单元测试全过**（含真实 DNS + HTTP 的 E2E） |
+| 子域的增量价值 | 根域探测发现 0 处冲突 → 子域批量探测发现 **5 处** |
+
+> ⚠️ **仅限授权使用。** 主动功能（端口扫描 / 指纹采集 / QUIC / 泛域名确认）**默认全部关闭**，需显式开启；内置端口白名单与限速。详见下方【授权使用要求】。
+
+<div align="center">
+
+📖 [文档与调研](doc/项目规划/) · 🗺️ [开发路线图](doc/项目规划/HouseRecon-后续开发路线图.md) · ⚖️ [LICENSE](LICENSE)
+
+</div>
 
 ---
 
@@ -32,21 +114,6 @@
 主动功能全部**默认关闭**，必须显式开启。端口扫描内置白名单约束（拒绝全端口扫描、单次上限 10000 端口）。
 
 **使用者须自行确保行为符合当地法律。** 在中国大陆，未经授权扫描他人系统可能触犯《刑法》第 285/286 条及《网络安全法》。工具内的约束不构成法律豁免。详见 [LICENSE](LICENSE)。
-
----
-
-## 它与其他工具的区别
-
-现有信息收集工具（httpx / nuclei / subfinder / naabu / theHarvester…）做的是**采集**：把多个来源的结果拼在一起输出。
-
-屋勘在采集之外多做了一件事：**判断这些结果之间是否自相矛盾，并把矛盾翻译成可行动项。**
-
-| | 常见工具 | 屋勘 |
-|---|---|---|
-| 输出 | 「这些是数据」 | 「**这些是数据 + 哪里有问题 + 你该做什么**」 |
-| 多来源指纹 | 拼接输出，不校验一致性 | ⭐ **交叉校验，冲突单独报出** |
-| 端口扫描 | 多为 SYN 半开（快，但会误报） | ⭐ **TCP connect（慢一个 RTT，但零误报）** |
-| 结论置信度 | 通常只给"是/否" | ⭐ **给 0-100 置信度 + 证据链** |
 
 ---
 
@@ -78,18 +145,9 @@ wukan recon example.com -o report.html
 
 ---
 
-## 快速上手
+## 更多用法示例
 
 ```bash
-# 编译
-go build -o wukan.exe ./prototype/wukan-go/cmd/wukan
-
-# 被动侦察（不向目标发包）
-wukan recon example.com
-
-# 一条龙（主动，需授权）
-wukan recon example.com --ports 80,443 --tech
-
 # 泛域名场景：二次确认"存活"子域（主动，需授权）
 # 对解析成功的子域发 HTTP，与随机子域的默认响应比对 → 区分真实站点与泛域名产物
 wukan recon example.com --wildcard-http
